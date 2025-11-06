@@ -1,0 +1,457 @@
+Option Compare Database
+Option Explicit
+
+Private Sub Form_Load()
+    On Error GoTo ErrHandler
+    
+    ' Set default values
+    Me.txtReturnDate.value = Date
+    Me.txtEnteredBy.value = Environ("USERNAME")
+    
+    ' Clear other fields
+    Call ClearHeaderControls
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading form: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub txtReturnID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim ReturnID As Long
+    
+    ReturnID = Nz(Me.txtReturnID.value, 0)
+    
+    If ReturnID > 0 Then
+        ' Load existing return header details
+        If DCount("*", "tblPurchaseReturnHeader", "ReturnID=" & ReturnID) > 0 Then
+            Call LoadReturnHeader(ReturnID)
+        Else
+            MsgBox "Return ID " & ReturnID & " not found.", vbExclamation, "Not Found"
+            Me.txtReturnID.value = Null
+        End If
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading return: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub txtGRNID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim GRNID As Long
+    
+    GRNID = Nz(Me.txtGRNID.value, 0)
+    
+    If GRNID > 0 Then
+        ' Auto-populate related fields from GRN
+        Call PopulateFromGRN(GRNID)
+    Else
+        ' Clear related fields if GRNID is cleared
+        Me.txtPOID.value = Null
+        Me.txtVendorID.value = Null
+        Me.txtStoreID.value = Null
+        Me.txtInvoiceNo.value = Null
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading GRN details: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' AUTO-POPULATE FROM GRN (CORRECTED VERSION)
+'====================================================
+Private Sub PopulateFromGRN(GRNID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rsGRN As DAO.Recordset
+    Dim rsPO As DAO.Recordset
+    Dim POID As Long
+    Dim VendorID As Long
+    Dim StoreID As Long
+    Dim InvoiceNo As String
+    Dim PurchaseID As Long
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    ' GET ALL FIELDS FROM tblPurchaseReceiptHeader (GRN)
+    '====================================================
+    Set rsGRN = db.OpenRecordset("SELECT POID, StoreID, InvoiceNo, GRNID " & _
+                                  "FROM tblPurchaseReceiptHeader " & _
+                                  "WHERE GRNID=" & GRNID, dbOpenSnapshot)
+    
+    If rsGRN.EOF Then
+        MsgBox "GRN ID " & GRNID & " not found.", vbExclamation, "GRN Not Found"
+        rsGRN.Close
+        Exit Sub
+    End If
+    
+    ' Get values from GRN header
+    POID = Nz(rsGRN!POID, 0)
+    StoreID = Nz(rsGRN!StoreID, 0)
+    InvoiceNo = Nz(rsGRN!InvoiceNo, "")
+    PurchaseID = Nz(rsGRN!GRNID, 0)  ' PurchaseID = GRNID from GRN table
+    
+    rsGRN.Close
+    Set rsGRN = Nothing
+    
+    '====================================================
+    ' GET VENDOR FROM tblPurchaseOrderDetails
+    '====================================================
+    If POID > 0 Then
+        Set rsPO = db.OpenRecordset("SELECT VendorID FROM tblPurchaseOrderHeader " & _
+                                     "WHERE POID=" & POID, dbOpenSnapshot)
+        
+        If Not rsPO.EOF Then
+            VendorID = Nz(rsPO!VendorID, 0)
+        Else
+            Debug.Print "Warning: PO not found for POID=" & POID
+        End If
+        
+        rsPO.Close
+        Set rsPO = Nothing
+    End If
+    
+    '====================================================
+    ' POPULATE FORM FIELDS
+    '====================================================
+    If POID > 0 Then Me.txtPOID.value = POID
+    If VendorID > 0 Then Me.txtVendorID.value = VendorID
+    If StoreID > 0 Then Me.txtStoreID.value = StoreID
+    If Len(Trim(InvoiceNo)) > 0 Then Me.txtInvoiceNo.value = InvoiceNo
+    
+    Debug.Print "========================================="
+    Debug.Print "Populated from GRN " & GRNID & ":"
+    Debug.Print "  POID: " & POID
+    Debug.Print "  VendorID: " & VendorID
+    Debug.Print "  StoreID: " & StoreID
+    Debug.Print "  InvoiceNo: " & InvoiceNo
+    Debug.Print "  PurchaseID: " & PurchaseID
+    Debug.Print "========================================="
+    
+    Set db = Nothing
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in PopulateFromGRN: " & Err.Description
+    MsgBox "Error populating from GRN: " & Err.Description & vbCrLf & _
+           "GRNID: " & GRNID, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+
+'====================================================
+' HELPER FUNCTION: CHECK IF FIELD EXISTS IN RECORDSET
+'====================================================
+Private Function HasField(rs As DAO.Recordset, FieldName As String) As Boolean
+    On Error Resume Next
+    Dim fld As DAO.Field
+    Set fld = rs.Fields(FieldName)
+    HasField = (Err.Number = 0)
+    On Error GoTo 0
+End Function
+
+'====================================================
+' SAVE HEADER BUTTON
+'====================================================
+Private Sub btnSaveHeader_Click()
+    On Error GoTo ErrHandler
+    
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim TransactionStarted As Boolean
+    Dim ReturnID As Long
+    
+    TransactionStarted = False
+    
+    '====================================================
+    ' VALIDATION
+    '====================================================
+    If Not ValidateHeaderForm() Then Exit Sub
+    
+    '====================================================
+    ' BEGIN TRANSACTION
+    '====================================================
+    Set ws = DBEngine.Workspaces(0)
+    Set db = CurrentDb
+    
+    ws.BeginTrans
+    TransactionStarted = True
+    Debug.Print "Transaction started for Purchase Return Header"
+    
+    '====================================================
+    ' SAVE RETURN HEADER
+    '====================================================
+    ReturnID = SaveReturnHeader()
+    
+    If ReturnID = 0 Then
+        Err.Raise vbObjectError + 1, "btnSaveHeader_Click", "Failed to save return header"
+    End If
+    
+    '====================================================
+    ' COMMIT TRANSACTION
+    '====================================================
+    ws.CommitTrans
+    TransactionStarted = False
+    Debug.Print "Transaction committed successfully"
+    
+    MsgBox "Purchase Return Header saved successfully!" & vbCrLf & _
+           "Return ID: " & ReturnID, vbInformation, "Success"
+    
+    ' Display the saved return
+    Me.txtReturnID.value = ReturnID
+    Call LoadReturnHeader(ReturnID)
+
+ExitHandler:
+    On Error Resume Next
+    If Not db Is Nothing Then Set db = Nothing
+    If Not ws Is Nothing Then Set ws = Nothing
+    Exit Sub
+
+ErrHandler:
+    On Error Resume Next
+    If TransactionStarted And Not ws Is Nothing Then
+        ws.Rollback
+        Debug.Print "Transaction rolled back"
+        MsgBox "Transaction rolled back. No changes were saved.", vbExclamation, "Save Cancelled"
+    End If
+    MsgBox "Error saving return header: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in btnSaveHeader_Click: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' VALIDATE HEADER FORM
+'====================================================
+Private Function ValidateHeaderForm() As Boolean
+    On Error GoTo ErrHandler
+    
+    ValidateHeaderForm = False
+    
+    ' Check Return Date
+    If IsNull(Me.txtReturnDate.value) Then
+        MsgBox "Please enter return date.", vbExclamation, "Validation Error"
+        Me.txtReturnDate.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Vendor
+    If Nz(Me.txtVendorID.value, 0) = 0 Then
+        MsgBox "Please select vendor.", vbExclamation, "Validation Error"
+        Me.txtVendorID.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Store
+    If Nz(Me.txtStoreID.value, 0) = 0 Then
+        MsgBox "Please select store.", vbExclamation, "Validation Error"
+        Me.txtStoreID.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Return Reason
+    If Len(Trim(Nz(Me.txtReturnReason.value, ""))) = 0 Then
+        MsgBox "Please enter return reason.", vbExclamation, "Validation Error"
+        Me.txtReturnReason.SetFocus
+        Exit Function
+    End If
+    
+    ValidateHeaderForm = True
+
+ExitHandler:
+    Exit Function
+
+ErrHandler:
+    Debug.Print "Error in ValidateHeaderForm: " & Err.Description
+    ValidateHeaderForm = False
+    Resume ExitHandler
+End Function
+
+'====================================================
+' SAVE RETURN HEADER
+'====================================================
+Private Function SaveReturnHeader() As Long
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim NewReturnID As Long
+    Dim ExistingReturnID As Long
+    
+    Set db = CurrentDb
+    
+    ' Check if updating existing record
+    ExistingReturnID = Nz(Me.txtReturnID.value, 0)
+    
+    If ExistingReturnID > 0 Then
+        ' Update existing record
+        Set rs = db.OpenRecordset("SELECT * FROM tblPurchaseReturnHeader WHERE ReturnID=" & ExistingReturnID, dbOpenDynaset)
+        
+        If Not rs.EOF Then
+            rs.Edit
+        Else
+            rs.Close
+            Err.Raise vbObjectError + 2, "SaveReturnHeader", "Return ID not found for update"
+        End If
+    Else
+        ' Insert new record
+        Set rs = db.OpenRecordset("tblPurchaseReturnHeader", dbOpenDynaset)
+        rs.AddNew
+    End If
+    
+    ' Set field values
+    If Not IsNull(Me.txtReturnNo.value) And Nz(Me.txtReturnNo.value, 0) > 0 Then
+        rs!ReturnNo = CLng(Me.txtReturnNo.value)
+    End If
+    
+    rs!ReturnDate = CDate(Me.txtReturnDate.value)
+    
+    If Nz(Me.txtGRNID.value, 0) > 0 Then
+        rs!GRNID = CLng(Me.txtGRNID.value)
+    End If
+    
+    If Nz(Me.txtPOID.value, 0) > 0 Then
+        rs!POID = CLng(Me.txtPOID.value)
+    End If
+    
+    rs!VendorID = CLng(Me.txtVendorID.value)
+    rs!StoreID = CLng(Me.txtStoreID.value)
+    
+    If Not IsNull(Me.txtInvoiceNo.value) And Len(Trim(Me.txtInvoiceNo.value)) > 0 Then
+        rs!InvoiceNo = CStr(Me.txtInvoiceNo.value)
+    End If
+       
+    rs!ReturnReason = CStr(Me.txtReturnReason.value)
+    rs!TotalReturnValue = CCur(Nz(Me.txtTotalReturnValue.value, 0))
+    
+    If Nz(Me.txtApprovedBy.value, 0) > 0 Then
+        rs!ApprovedBy = CLng(Me.txtApprovedBy.value)
+    End If
+    
+    rs!EnteredBy = CLng(Me.txtEnteredBy.value)
+    
+    If Not IsNull(Me.txtReferenceDoc.value) And Len(Trim(Me.txtReferenceDoc.value)) > 0 Then
+        rs!ReferenceDoc = CStr(Me.txtReferenceDoc.value)
+    End If
+    
+    rs!EntryTimestamp = Now()
+    
+    rs.Update
+    
+    ' Get the ReturnID
+    If ExistingReturnID > 0 Then
+        NewReturnID = ExistingReturnID
+    Else
+        rs.Bookmark = rs.LastModified
+        NewReturnID = rs!ReturnID
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    SaveReturnHeader = NewReturnID
+    Debug.Print "Saved return header with ID: " & NewReturnID
+
+ExitHandler:
+    Exit Function
+
+ErrHandler:
+    Debug.Print "Error in SaveReturnHeader: " & Err.Description
+    SaveReturnHeader = 0
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Function
+
+'====================================================
+' LOAD RETURN HEADER
+'====================================================
+Private Sub LoadReturnHeader(ReturnID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM tblPurchaseReturnHeader WHERE ReturnID=" & ReturnID, dbOpenSnapshot)
+    
+    If Not rs.EOF Then
+        Me.txtReturnNo.value = Nz(rs!ReturnNo, "")
+        Me.txtReturnDate.value = rs!ReturnDate
+        Me.txtGRNID.value = Nz(rs!GRNID, "")
+        Me.txtPOID.value = Nz(rs!POID, "")
+        Me.txtVendorID.value = rs!VendorID
+        Me.txtStoreID.value = rs!StoreID
+        Me.txtInvoiceNo.value = Nz(rs!InvoiceNo, "")
+        'Me.txtPurchaseID.value = Nz(rs!PurchaseID, "")
+        Me.txtReturnReason.value = Nz(rs!ReturnReason, "")
+        Me.txtTotalReturnValue.value = Nz(rs!TotalReturnValue, 0)
+        Me.txtApprovedBy.value = Nz(rs!ApprovedBy, "")
+        Me.txtEnteredBy.value = Nz(rs!EnteredBy, "")
+        Me.txtReferenceDoc.value = Nz(rs!ReferenceDoc, "")
+        
+        Debug.Print "Loaded return header ID: " & ReturnID
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading return header: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in LoadReturnHeader: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' CLEAR HEADER CONTROLS
+'====================================================
+Private Sub ClearHeaderControls()
+    On Error Resume Next
+    
+    Me.txtReturnNo.value = Null
+    Me.txtReturnDate.value = ""
+    Me.txtGRNID.value = Null
+    Me.txtPOID.value = Null
+    Me.txtVendorID.value = Null
+    Me.txtStoreID.value = Null
+    Me.txtInvoiceNo.value = Null
+    'Me.txtPurchaseID.value = Null
+    Me.txtReturnReason.value = Null
+    Me.txtTotalReturnValue.value = 0
+    Me.txtApprovedBy.value = Null
+    Me.txtReferenceDoc.value = Null
+    
+    Debug.Print "Header controls cleared"
+End Sub
+
+'====================================================
+' NEW RETURN BUTTON (OPTIONAL)
+'====================================================
+Private Sub btnNew_Click()
+    On Error Resume Next
+    
+    Me.txtReturnID.value = Null
+    Me.txtReturnDate.value = Date
+    Me.txtEnteredBy.value = Environ("USERNAME")
+    Call ClearHeaderControls
+    Me.txtReturnDate.SetFocus
+End Sub

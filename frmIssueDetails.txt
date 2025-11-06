@@ -1,0 +1,633 @@
+Option Compare Database
+Option Explicit
+
+Private Sub Form_Load()
+    On Error GoTo ErrHandler
+    
+    ' Center form on screen
+    Me.Move 1500, 2500
+    
+    Call ClearDetailControls
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading form: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+
+Private Sub txtIssueID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim IssueID As Long
+    
+    IssueID = Nz(Me.txtIssueID, 0)
+    
+    If IssueID > 0 Then
+        ' Load existing issue details if they exist
+        If DCount("*", "tblIssueDetails", "IssueID=" & IssueID) > 0 Then
+            Call LoadIssueDetails(IssueID)
+        Else
+            ' New issue - just clear the details
+            Call ClearDetailControls
+        End If
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading Issue Details: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' ITEM SELECTION EVENT HANDLERS
+'====================================================
+Private Sub cboItemID0_AfterUpdate()
+    Call HandleItemSelection(0)
+End Sub
+
+Private Sub cboItemID1_AfterUpdate()
+    Call HandleItemSelection(1)
+End Sub
+
+Private Sub cboItemID2_AfterUpdate()
+    Call HandleItemSelection(2)
+End Sub
+
+Private Sub cboItemID3_AfterUpdate()
+    Call HandleItemSelection(3)
+End Sub
+
+Private Sub cboItemID4_AfterUpdate()
+    Call HandleItemSelection(4)
+End Sub
+
+Private Sub cboItemID5_AfterUpdate()
+    Call HandleItemSelection(5)
+End Sub
+
+Private Sub cboItemID6_AfterUpdate()
+    Call HandleItemSelection(6)
+End Sub
+
+Private Sub HandleItemSelection(rowIndex As Integer)
+    On Error GoTo ErrHandler
+
+    Dim ItemID As Long
+    Dim IssueID As Long
+
+    '====================================================
+    ' GET ISSUEID FROM txtIssueID CONTROL
+    '====================================================
+    IssueID = Nz(Me.txtIssueID, 0)
+    
+    If IssueID = 0 Then
+        MsgBox "Please enter Issue ID first.", vbExclamation, "Missing Issue ID"
+        Me.Controls("cboItemID" & rowIndex).value = Null
+        Exit Sub
+    End If
+
+    '====================================================
+    ' GET SELECTED ITEMID
+    '====================================================
+    ItemID = Nz(Me.Controls("cboItemID" & rowIndex).value, 0)
+    
+    If ItemID = 0 Then
+        ' Item cleared - clear related fields
+        Me.Controls("cboIssuingStore" & rowIndex).value = Null
+        Me.Controls("txtQuantityAvailable" & rowIndex).value = Null
+        Me.Controls("txtRate" & rowIndex).value = Null
+        Me.Controls("txtAmount" & rowIndex).value = Null
+        Exit Sub
+    End If
+
+    Debug.Print "HandleItemSelection Row " & rowIndex & ": ItemID=" & ItemID
+
+    '====================================================
+    ' SHOW STOCK AVAILABILITY POPUP - USER SELECTS STORE
+    '====================================================
+    Dim SelectedStoreID As Long
+    SelectedStoreID = ShowStockSelectionPopup(ItemID)
+    
+    If SelectedStoreID = 0 Then
+        ' User cancelled or no stock available
+        MsgBox "No store selected or no stock available.", vbExclamation, "Selection Cancelled"
+        Me.Controls("cboItemID" & rowIndex).value = Null
+        Exit Sub
+    End If
+    
+    ' Set the selected issuing store
+    Me.Controls("cboIssuingStore" & rowIndex).value = SelectedStoreID
+    
+    ' Trigger the store selection handler
+    Call HandleIssuingStoreSelection(rowIndex)
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading item details (row " & rowIndex & "): " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in HandleItemSelection(" & rowIndex & "): " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' ISSUING STORE SELECTION HANDLERS
+'====================================================
+Private Sub cboIssuingStore0_AfterUpdate()
+    Call HandleIssuingStoreSelection(0)
+End Sub
+
+Private Sub cboIssuingStore1_AfterUpdate()
+    Call HandleIssuingStoreSelection(1)
+End Sub
+
+Private Sub cboIssuingStore2_AfterUpdate()
+    Call HandleIssuingStoreSelection(2)
+End Sub
+
+Private Sub cboIssuingStore3_AfterUpdate()
+    Call HandleIssuingStoreSelection(3)
+End Sub
+
+Private Sub cboIssuingStore4_AfterUpdate()
+    Call HandleIssuingStoreSelection(4)
+End Sub
+
+Private Sub cboIssuingStore5_AfterUpdate()
+    Call HandleIssuingStoreSelection(5)
+End Sub
+
+Private Sub cboIssuingStore6_AfterUpdate()
+    Call HandleIssuingStoreSelection(6)
+End Sub
+
+Private Sub HandleIssuingStoreSelection(rowIndex As Integer)
+    On Error GoTo ErrHandler
+    
+    Dim ItemID As Long
+    Dim StoreID As Long
+    Dim qtyAvailable As Double
+    Dim lastRate As Currency
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    ItemID = Nz(Me.Controls("cboItemID" & rowIndex).value, 0)
+    StoreID = Nz(Me.Controls("cboIssuingStore" & rowIndex).value, 0)
+    
+    If ItemID = 0 Or StoreID = 0 Then Exit Sub
+    
+    Debug.Print "HandleIssuingStoreSelection Row " & rowIndex & ": ItemID=" & ItemID & ", StoreID=" & StoreID
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    ' GET AVAILABLE QUANTITY FROM SELECTED STORE
+    '====================================================
+    qtyAvailable = Nz(DLookup("CurrentStock", "tblStoreStock", _
+                    "ItemID=" & ItemID & " AND StoreID=" & StoreID), 0)
+    
+    Me.Controls("txtQuantityAvailable" & rowIndex).value = qtyAvailable
+    Debug.Print "  Available Qty: " & qtyAvailable
+    
+    '====================================================
+    ' GET RATE FROM SELECTED STORE
+    '====================================================
+    ' 1. Try LastRate from this store's stock
+    lastRate = Nz(DLookup("LastRate", "tblStoreStock", _
+                "ItemID=" & ItemID & " AND StoreID=" & StoreID), 0)
+    Debug.Print "  LastRate from tblStoreStock: " & lastRate
+    
+    ' 2. Fallback to most recent purchase receipt
+    If lastRate = 0 Then
+        Set rs = db.OpenRecordset("SELECT TOP 1 Rate FROM tblPurchaseReceiptDetails " & _
+                                  "WHERE ItemID=" & ItemID & " " & _
+                                  "ORDER BY PRDetailID DESC;", dbOpenSnapshot)
+        If Not rs.EOF Then
+            lastRate = Nz(rs!Rate, 0)
+        End If
+        rs.Close
+        Set rs = Nothing
+        Debug.Print "  Rate from tblPurchaseReceiptDetails: " & lastRate
+    End If
+    
+    ' 3. Fallback to most recent PO
+    If lastRate = 0 Then
+        Set rs = db.OpenRecordset("SELECT TOP 1 Rate FROM tblPurchaseOrderDetails " & _
+                                  "WHERE ItemID=" & ItemID & " " & _
+                                  "ORDER BY PODetailID DESC;", dbOpenSnapshot)
+        If Not rs.EOF Then
+            lastRate = Nz(rs!Rate, 0)
+        End If
+        rs.Close
+        Set rs = Nothing
+        Debug.Print "  Rate from tblPurchaseOrderDetails: " & lastRate
+    End If
+    
+    ' 4. Final fallback to item master
+    If lastRate = 0 Then
+        lastRate = Nz(DLookup("UnitCost", "tblItem", "ItemID=" & ItemID), 0)
+        Debug.Print "  UnitCost from tblItem: " & lastRate
+    End If
+    
+    Me.Controls("txtRate" & rowIndex).value = lastRate
+    Debug.Print "  Final Rate: " & lastRate
+    
+    '====================================================
+    ' AUTO-CALCULATE AMOUNT IF QUANTITY ALREADY ENTERED
+    '====================================================
+    If Nz(Me.Controls("txtQuantityIssued" & rowIndex).value, 0) > 0 Then
+        Call CalculateAmount(rowIndex)
+    End If
+    
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close: Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+    
+ErrHandler:
+    MsgBox "Error in HandleIssuingStoreSelection: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in HandleIssuingStoreSelection: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+
+'====================================================
+' SHOW STOCK SELECTION POPUP WITH STORE-WISE AVAILABILITY
+'====================================================
+Private Function ShowStockSelectionPopup(ItemID As Long) As Long
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    Dim msg As String
+    Dim ItemName As String
+    Dim StoreName As String
+    Dim StockQty As Double
+    Dim totalStock As Double
+    Dim storeCount As Integer
+    Dim userInput As String
+    Dim selectedStore As Long
+    Dim storeList As String
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    ' GET ITEM NAME
+    '====================================================
+    ItemName = Nz(DLookup("ItemName", "tblItem", "ItemID=" & ItemID), "Unknown Item")
+    
+    '====================================================
+    ' GET STOCK ACROSS ALL STORES
+    '====================================================
+    strSQL = "SELECT ss.StoreID, l.SiteName, ss.CurrentStock " & _
+             "FROM tblStoreStock ss " & _
+             "INNER JOIN Location l ON ss.StoreID = l.LocationID " & _
+             "WHERE ss.ItemID=" & ItemID & " AND ss.CurrentStock > 0 " & _
+             "ORDER BY ss.CurrentStock DESC, l.SiteName;"
+    
+    Debug.Print "SQL: " & strSQL
+    
+    Set rs = db.OpenRecordset(strSQL, dbOpenSnapshot)
+    
+    If rs.EOF Then
+        MsgBox "No stock available for this item in any store.", vbExclamation, "No Stock"
+        ShowStockSelectionPopup = 0
+        rs.Close
+        Exit Function
+    End If
+    
+    '====================================================
+    ' BUILD MESSAGE WITH STORE LIST
+    '====================================================
+    msg = "SELECT ISSUING STORE" & vbCrLf
+    msg = msg & String(70, "=") & vbCrLf & vbCrLf
+    msg = msg & "Item: " & ItemName & vbCrLf & vbCrLf
+    msg = msg & "Available Stock by Store:" & vbCrLf
+    msg = msg & String(70, "-") & vbCrLf
+    
+    totalStock = 0
+    storeCount = 0
+    storeList = ""
+    
+    Do While Not rs.EOF
+        storeCount = storeCount + 1
+        StoreName = Nz(rs!SiteName, "Store #" & rs!StoreID)
+        StockQty = Nz(rs!CurrentStock, 0)
+        totalStock = totalStock + StockQty
+        
+        msg = msg & storeCount & ". " & StoreName & " - " & Format(StockQty, "#,##0.00") & " units" & vbCrLf
+        
+        ' Build internal list for selection
+        If storeList = "" Then
+            storeList = rs!StoreID
+        Else
+            storeList = storeList & "," & rs!StoreID
+        End If
+        
+        rs.MoveNext
+    Loop
+    
+    rs.Close
+    
+    msg = msg & String(70, "-") & vbCrLf
+    msg = msg & "Total Available: " & Format(totalStock, "#,##0.00") & " units across " & storeCount & " store(s)" & vbCrLf & vbCrLf
+    msg = msg & "Enter store number (1-" & storeCount & ") or 0 to cancel:"
+    
+    '====================================================
+    ' GET USER INPUT
+    '====================================================
+    userInput = InputBox(msg, "Select Issuing Store", "1")
+    
+    If userInput = "" Or Val(userInput) = 0 Then
+        ShowStockSelectionPopup = 0
+        Exit Function
+    End If
+    
+    Dim selectedIndex As Integer
+    selectedIndex = Val(userInput)
+    
+    If selectedIndex < 1 Or selectedIndex > storeCount Then
+        MsgBox "Invalid selection. Please enter a number between 1 and " & storeCount, vbExclamation, "Invalid Input"
+        ShowStockSelectionPopup = 0
+        Exit Function
+    End If
+    
+    '====================================================
+    ' CONVERT SELECTION TO STOREID
+    '====================================================
+    Dim storeArray() As String
+    storeArray = Split(storeList, ",")
+    selectedStore = CLng(storeArray(selectedIndex - 1))
+    
+    ShowStockSelectionPopup = selectedStore
+    
+    Debug.Print "User selected Store ID: " & selectedStore
+
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close: Set rs = Nothing
+    Set db = Nothing
+    Exit Function
+
+ErrHandler:
+    Debug.Print "Error in ShowStockSelectionPopup: " & Err.Description
+    MsgBox "Error showing stock selection: " & Err.Description, vbCritical, "Error"
+    ShowStockSelectionPopup = 0
+    Resume ExitHandler
+End Function
+
+'====================================================
+' QUANTITY ISSUED CHANGE EVENTS
+'====================================================
+Private Sub txtQuantityIssued0_AfterUpdate()
+    Call CalculateAmount(0)
+End Sub
+
+Private Sub txtQuantityIssued1_AfterUpdate()
+    Call CalculateAmount(1)
+End Sub
+
+Private Sub txtQuantityIssued2_AfterUpdate()
+    Call CalculateAmount(2)
+End Sub
+
+Private Sub txtQuantityIssued3_AfterUpdate()
+    Call CalculateAmount(3)
+End Sub
+
+Private Sub txtQuantityIssued4_AfterUpdate()
+    Call CalculateAmount(4)
+End Sub
+
+Private Sub txtQuantityIssued5_AfterUpdate()
+    Call CalculateAmount(5)
+End Sub
+
+Private Sub txtQuantityIssued6_AfterUpdate()
+    Call CalculateAmount(6)
+End Sub
+
+Private Sub CalculateAmount(rowIndex As Integer)
+    On Error Resume Next
+    
+    Dim qty As Double
+    Dim Rate As Currency
+    Dim available As Double
+    
+    qty = Nz(Me.Controls("txtQuantityIssued" & rowIndex).value, 0)
+    Rate = Nz(Me.Controls("txtRate" & rowIndex).value, 0)
+    available = Nz(Me.Controls("txtQuantityAvailable" & rowIndex).value, 0)
+    
+    ' Calculate amount
+    Me.Controls("txtAmount" & rowIndex).value = qty * Rate
+    
+    ' Warn if exceeding available stock
+    If qty > available And available >= 0 Then
+        MsgBox "Warning: Issued quantity (" & qty & ") exceeds available stock (" & available & ") for this item!", _
+               vbExclamation, "Over-Issue Warning"
+    End If
+End Sub
+
+'====================================================
+' SAVE BUTTON WITH TRANSACTION SUPPORT
+'====================================================
+Private Sub btnSaveItem_Click()
+    On Error GoTo ErrHandler
+
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim IssueID As Long
+    Dim TransactionStarted As Boolean
+    
+    TransactionStarted = False
+
+    IssueID = Nz(Me.txtIssueID, 0)
+
+    If IssueID = 0 Then
+        MsgBox "Please enter Issue ID first!", vbExclamation, "Missing Issue ID"
+        Me.txtIssueID.SetFocus
+        Exit Sub
+    End If
+
+    If DCount("*", "tblIssueHeader", "IssueID=" & IssueID) = 0 Then
+        MsgBox "Issue ID " & IssueID & " not found in Issue Header. Please check.", vbExclamation, "Invalid Issue ID"
+        Exit Sub
+    End If
+
+    Set ws = DBEngine.Workspaces(0)
+    Set db = CurrentDb
+    
+    ws.BeginTrans
+    TransactionStarted = True
+    Debug.Print "Transaction started for IssueID " & IssueID
+
+    Call SaveIssueDetailsFromRows(IssueID)
+    
+    ws.CommitTrans
+    TransactionStarted = False
+    Debug.Print "Transaction committed"
+    
+    Call UpdateStoreStockFromIssue(IssueID)
+    
+    MsgBox "Issue Details saved successfully and stock updated!", vbInformation, "Success"
+    
+    Call LoadIssueDetails(IssueID)
+
+ExitHandler:
+    On Error Resume Next
+    If Not db Is Nothing Then Set db = Nothing
+    If Not ws Is Nothing Then Set ws = Nothing
+    Exit Sub
+
+ErrHandler:
+    On Error Resume Next
+    If TransactionStarted And Not ws Is Nothing Then
+        ws.Rollback
+        Debug.Print "Transaction rolled back"
+        MsgBox "Transaction rolled back. No changes were saved.", vbExclamation, "Save Cancelled"
+    End If
+    MsgBox "Error saving issue details: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in btnSaveItem_Click: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+Private Sub SaveIssueDetailsFromRows(IssueID As Long)
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim ItemID As Long
+    Dim IssuingStoreID As Long
+    Dim QtyIssued As Double
+    Dim Rate As Currency
+    Dim Amount As Currency
+    Dim Remarks As String
+    Dim ItemCount As Integer
+
+    Set db = CurrentDb
+
+    db.Execute "DELETE FROM tblIssueDetails WHERE IssueID=" & IssueID, dbFailOnError
+    Debug.Print "Deleted existing details for IssueID " & IssueID
+
+    Set rs = db.OpenRecordset("tblIssueDetails", dbOpenDynaset)
+
+    ItemCount = 0
+    For i = 0 To 6
+        ItemID = Nz(Me.Controls("cboItemID" & i).value, 0)
+        IssuingStoreID = Nz(Me.Controls("cboIssuingStore" & i).value, 0)
+        QtyIssued = Nz(Me.Controls("txtQuantityIssued" & i).value, 0)
+        Rate = Nz(Me.Controls("txtRate" & i).value, 0)
+        Amount = Nz(Me.Controls("txtAmount" & i).value, 0)
+        Remarks = Nz(Me.Controls("txtRemarks" & i).value, "")
+
+        If ItemID > 0 And IssuingStoreID > 0 And QtyIssued > 0 Then
+            rs.AddNew
+            rs!IssueID = CLng(IssueID)
+            rs!ItemID = CLng(ItemID)
+            rs!IssuingStoreID = CLng(IssuingStoreID)
+            rs!QuantityIssued = CDbl(QtyIssued)
+            rs!Rate = CCur(Rate)
+            rs!Amount = CCur(Amount)
+            If Len(Trim(Remarks)) > 0 Then
+                rs!Remarks = CStr(Remarks)
+            End If
+            rs.Update
+            ItemCount = ItemCount + 1
+            Debug.Print "Saved: ItemID=" & ItemID & ", Store=" & IssuingStoreID & ", Qty=" & QtyIssued
+        End If
+    Next i
+
+    rs.Close
+    
+    Debug.Print "Saved " & ItemCount & " issue detail rows"
+    
+    If ItemCount = 0 Then
+        Err.Raise vbObjectError + 1, "SaveIssueDetailsFromRows", "No items to save."
+    End If
+
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close: Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in SaveIssueDetailsFromRows: " & Err.Description
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+Private Sub LoadIssueDetails(lngIssueID As Long)
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim ItemID As Long
+    Dim StoreID As Long
+
+    Set db = CurrentDb
+    
+    Set rs = db.OpenRecordset("SELECT * FROM tblIssueDetails WHERE IssueID=" & lngIssueID & " ORDER BY IssueDetailID;", dbOpenDynaset)
+
+    Call ClearDetailControls
+
+    i = 0
+    Do While Not rs.EOF And i <= 6
+        ItemID = Nz(rs!ItemID, 0)
+        StoreID = Nz(rs!IssuingStoreID, 0)
+        
+        Me.Controls("cboItemID" & i).value = ItemID
+        Me.Controls("cboIssuingStore" & i).value = StoreID
+        Me.Controls("txtQuantityIssued" & i).value = Nz(rs!QuantityIssued, 0)
+        Me.Controls("txtRate" & i).value = Nz(rs!Rate, 0)
+        Me.Controls("txtAmount" & i).value = Nz(rs!Amount, 0)
+        Me.Controls("txtRemarks" & i).value = Nz(rs!Remarks, "")
+        
+        If ItemID > 0 And StoreID > 0 Then
+            Me.Controls("txtQuantityAvailable" & i).value = _
+                Nz(DLookup("CurrentStock", "tblStoreStock", _
+                "ItemID=" & ItemID & " AND StoreID=" & StoreID), 0)
+        End If
+        
+        i = i + 1
+        rs.MoveNext
+    Loop
+    
+    Debug.Print "Loaded " & i & " issue detail rows"
+
+CleanExit:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close: Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading Issue Details: " & Err.Description, vbCritical, "Error"
+    Resume CleanExit
+End Sub
+
+Private Sub ClearDetailControls()
+    On Error Resume Next
+    
+    Dim i As Integer
+    
+    For i = 0 To 6
+        Me.Controls("cboItemID" & i).value = Null
+        Me.Controls("cboIssuingStore" & i).value = Null
+        Me.Controls("txtQuantityAvailable" & i).value = Null
+        Me.Controls("txtQuantityIssued" & i).value = Null
+        Me.Controls("txtRate" & i).value = Null
+        Me.Controls("txtAmount" & i).value = Null
+        Me.Controls("txtRemarks" & i).value = Null
+    Next i
+    
+    Debug.Print "Detail controls cleared"
+End Sub

@@ -1,0 +1,736 @@
+Option Compare Database
+Option Explicit
+
+Private Sub Form_Load()
+    On Error GoTo ErrHandler
+    
+    ' Set default values
+    Me.txtAdjustmentDate.value = Date
+    Me.txtEnteredBy.value = Environ("USERNAME")  ' Current Windows user
+    
+    ' Clear other fields
+    Call ClearFormControls
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading form: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub txtAdjustmentID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim AdjustmentID As Long
+    
+    AdjustmentID = Nz(Me.txtAdjustmentID.value, 0)
+    
+    If AdjustmentID > 0 Then
+        ' Load existing adjustment details
+        If DCount("*", "tblStockAdjustment", "AdjustmentID=" & AdjustmentID) > 0 Then
+            Call LoadAdjustmentDetails(AdjustmentID)
+        Else
+            MsgBox "Adjustment ID " & AdjustmentID & " not found.", vbExclamation, "Not Found"
+            Me.txtAdjustmentID.value = Null
+        End If
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading adjustment: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub cboStoreID_AfterUpdate()
+    On Error Resume Next
+    ' When store changes, refresh available quantity
+    Call UpdateQuantityBefore
+End Sub
+
+Private Sub cboItemID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    ' When item changes, load current stock and rate
+    Call UpdateQuantityBefore
+    Call UpdateRate
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading item details: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub txtAdjustmentQty_AfterUpdate()
+    On Error Resume Next
+    ' Auto-calculate quantity after and value change
+    Call CalculateQuantityAfter
+    Call CalculateTotalValueChange
+End Sub
+
+Private Sub txtRate_AfterUpdate()
+    On Error Resume Next
+    ' Recalculate total value change
+    Call CalculateTotalValueChange
+End Sub
+
+Private Sub cboAdjustmentTypeID_AfterUpdate()
+    On Error Resume Next
+    ' Recalculate based on adjustment effect (increase/decrease)
+    Call CalculateQuantityAfter
+    Call CalculateTotalValueChange
+End Sub
+
+'====================================================
+' UPDATE QUANTITY BEFORE (CURRENT STOCK)
+'====================================================
+Private Sub UpdateQuantityBefore()
+    On Error GoTo ErrHandler
+    
+    Dim StoreID As Long
+    Dim ItemID As Long
+    Dim CurrentStock As Double
+    
+    StoreID = Nz(Me.cboStoreID.value, 0)
+    ItemID = Nz(Me.cboItemID.value, 0)
+    
+    If StoreID = 0 Or ItemID = 0 Then Exit Sub
+    
+    ' Get current stock from tblStoreStock
+    CurrentStock = Nz(DLookup("CurrentStock", "tblStoreStock", _
+                    "StoreID=" & StoreID & " AND ItemID=" & ItemID), 0)
+    
+    Me.txtQuantityBefore.value = CurrentStock
+    
+    Debug.Print "Current Stock for ItemID " & ItemID & " at Store " & StoreID & ": " & CurrentStock
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in UpdateQuantityBefore: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' UPDATE RATE FROM STORE STOCK
+'====================================================
+Private Sub UpdateRate()
+    On Error GoTo ErrHandler
+    
+    Dim StoreID As Long
+    Dim ItemID As Long
+    Dim lastRate As Currency
+    
+    StoreID = Nz(Me.cboStoreID.value, 0)
+    ItemID = Nz(Me.cboItemID.value, 0)
+    
+    If StoreID = 0 Or ItemID = 0 Then Exit Sub
+    
+    ' Get last rate from tblStoreStock
+    lastRate = Nz(DLookup("LastRate", "tblStoreStock", _
+                "StoreID=" & StoreID & " AND ItemID=" & ItemID), 0)
+    
+    ' Fallback to item master if not found
+    If lastRate = 0 Then
+        lastRate = Nz(DLookup("UnitCost", "tblItem", "ItemID=" & ItemID), 0)
+    End If
+    
+    Me.txtRate.value = lastRate
+    
+    Debug.Print "Rate for ItemID " & ItemID & ": " & lastRate
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in UpdateRate: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' CALCULATE QUANTITY AFTER ADJUSTMENT
+'====================================================
+Private Sub CalculateQuantityAfter()
+    On Error GoTo ErrHandler
+    
+    Dim QuantityBefore As Double
+    Dim AdjustmentQty As Double
+    Dim QuantityAfter As Double
+    Dim AdjustmentTypeID As Long
+    Dim EffectOnStock As String
+    
+    QuantityBefore = Nz(Me.txtQuantityBefore.value, 0)
+    AdjustmentQty = Nz(Me.txtAdjustmentQty.value, 0)
+    AdjustmentTypeID = Nz(Me.cboAdjustmentTypeID.value, 0)
+    
+    If AdjustmentTypeID = 0 Then Exit Sub
+    
+    ' Get effect on stock (Increase or Decrease)
+    EffectOnStock = Nz(DLookup("EffectOnStock", "tblAdjustmentType", _
+                    "AdjustmentTypeID=" & AdjustmentTypeID), "")
+    
+    ' Calculate quantity after based on effect
+    If UCase(Trim(EffectOnStock)) = "INCREASE" Then
+        QuantityAfter = QuantityBefore + AdjustmentQty
+    ElseIf UCase(Trim(EffectOnStock)) = "DECREASE" Then
+        QuantityAfter = QuantityBefore - AdjustmentQty
+    Else
+        QuantityAfter = QuantityBefore
+    End If
+    
+    ' Prevent negative stock warning
+    If QuantityAfter < 0 Then
+        MsgBox "Warning: Adjustment will result in negative stock (" & QuantityAfter & ")!" & vbCrLf & _
+               "Current Stock: " & QuantityBefore & vbCrLf & _
+               "Adjustment: " & AdjustmentQty, vbExclamation, "Negative Stock Warning"
+    End If
+    
+    Me.txtQuantityAfter.value = QuantityAfter
+    
+    Debug.Print "Effect On Stock: " & EffectOnStock & ", Qty After: " & QuantityAfter
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in CalculateQuantityAfter: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' CALCULATE TOTAL VALUE CHANGE
+'====================================================
+Private Sub CalculateTotalValueChange()
+    On Error Resume Next
+    
+    Dim AdjustmentQty As Double
+    Dim Rate As Currency
+    Dim TotalValueChange As Currency
+    
+    AdjustmentQty = Nz(Me.txtAdjustmentQty.value, 0)
+    Rate = Nz(Me.txtRate.value, 0)
+    
+    TotalValueChange = AdjustmentQty * Rate
+    
+    Me.txtTotalValueChange.value = TotalValueChange
+    
+    Debug.Print "Total Value Change: " & TotalValueChange
+End Sub
+
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+    
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim TransactionStarted As Boolean
+    Dim AdjustmentID As Long
+    Dim errorStep As String
+    
+    TransactionStarted = False
+    errorStep = "Initialization"
+    
+    Debug.Print "========================================="
+    Debug.Print "btnSave_Click started at: " & Now()
+    
+    '====================================================
+    ' VALIDATION
+    '====================================================
+    errorStep = "Validation"
+    Debug.Print "Step: " & errorStep
+    
+    If Not ValidateForm() Then
+        Debug.Print "Validation FAILED"
+        MsgBox "Validation failed. Please check all required fields.", vbExclamation, "Validation Error"
+        Exit Sub
+    End If
+    Debug.Print "Validation PASSED"
+    
+    '====================================================
+    ' BEGIN TRANSACTION
+    '====================================================
+    errorStep = "Database Connection"
+    Debug.Print "Step: " & errorStep
+    
+    Set ws = DBEngine.Workspaces(0)
+    Set db = CurrentDb
+    
+    errorStep = "Begin Transaction"
+    Debug.Print "Step: " & errorStep
+    
+    ws.BeginTrans
+    TransactionStarted = True
+    Debug.Print "Transaction started"
+    
+    '====================================================
+    ' SAVE ADJUSTMENT RECORD
+    '====================================================
+    errorStep = "SaveAdjustmentRecord"
+    Debug.Print "Step: " & errorStep
+    
+    AdjustmentID = SaveAdjustmentRecord()
+    Debug.Print "AdjustmentID returned: " & AdjustmentID
+    
+    If AdjustmentID = 0 Then
+        Debug.Print "ERROR: AdjustmentID is 0"
+        Err.Raise vbObjectError + 1, "btnSave_Click", "Failed to save adjustment record - returned ID is 0"
+    End If
+    
+    '====================================================
+    ' UPDATE STORE STOCK
+    '====================================================
+    errorStep = "UpdateStoreStock"
+    Debug.Print "Step: " & errorStep
+    
+    Call UpdateStoreStock(AdjustmentID)
+    Debug.Print "UpdateStoreStock completed"
+    
+    '====================================================
+    ' RECORD IN STOCK LEDGER
+    '====================================================
+    errorStep = "RecordInStockLedger"
+    Debug.Print "Step: " & errorStep
+    
+    Call RecordInStockLedger(AdjustmentID)
+    Debug.Print "RecordInStockLedger completed"
+    
+    '====================================================
+    ' COMMIT TRANSACTION
+    '====================================================
+    errorStep = "Commit Transaction"
+    Debug.Print "Step: " & errorStep
+    
+    ws.CommitTrans
+    TransactionStarted = False
+    Debug.Print "Transaction committed successfully"
+    
+    MsgBox "Stock adjustment saved successfully!" & vbCrLf & _
+           "Adjustment ID: " & AdjustmentID, vbInformation, "Success"
+    
+    ' Display the saved adjustment
+    Me.txtAdjustmentID.value = AdjustmentID
+    Call LoadAdjustmentDetails(AdjustmentID)
+    
+    Debug.Print "Completed successfully"
+    Debug.Print "========================================="
+
+ExitHandler:
+    On Error Resume Next
+    If Not db Is Nothing Then Set db = Nothing
+    If Not ws Is Nothing Then Set ws = Nothing
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "========================================="
+    Debug.Print "ERROR at step: " & errorStep
+    Debug.Print "Error Number: " & Err.Number
+    Debug.Print "Error Description: " & Err.Description
+    Debug.Print "Error Source: " & Err.Source
+    Debug.Print "========================================="
+    
+    On Error Resume Next
+    If TransactionStarted And Not ws Is Nothing Then
+        ws.Rollback
+        Debug.Print "Transaction rolled back"
+    End If
+    
+    MsgBox "Error at step: " & errorStep & vbCrLf & vbCrLf & _
+           "Error: " & Err.Description & vbCrLf & _
+           "Error Number: " & Err.Number, vbCritical, "Save Error"
+    
+    Resume ExitHandler
+End Sub
+
+
+'====================================================
+' VALIDATE FORM INPUTS
+'====================================================
+Private Function ValidateForm() As Boolean
+    On Error GoTo ErrHandler
+    
+    ValidateForm = False
+    
+    ' Check Adjustment Date
+    If IsNull(Me.txtAdjustmentDate.value) Then
+        MsgBox "Please enter adjustment date.", vbExclamation, "Validation Error"
+        Me.txtAdjustmentDate.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Store
+    If Nz(Me.cboStoreID.value, 0) = 0 Then
+        MsgBox "Please select a store.", vbExclamation, "Validation Error"
+        Me.cboStoreID.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Item
+    If Nz(Me.cboItemID.value, 0) = 0 Then
+        MsgBox "Please select an item.", vbExclamation, "Validation Error"
+        Me.cboItemID.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Adjustment Type
+    If Nz(Me.cboAdjustmentTypeID.value, 0) = 0 Then
+        MsgBox "Please select adjustment type.", vbExclamation, "Validation Error"
+        Me.cboAdjustmentTypeID.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Adjustment Quantity
+    If Nz(Me.txtAdjustmentQty.value, 0) = 0 Then
+        MsgBox "Please enter adjustment quantity (must be greater than zero).", vbExclamation, "Validation Error"
+        Me.txtAdjustmentQty.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Rate
+    If Nz(Me.txtRate.value, 0) = 0 Then
+        MsgBox "Please enter rate.", vbExclamation, "Validation Error"
+        Me.txtRate.SetFocus
+        Exit Function
+    End If
+    
+    ' Check Reason
+    If Len(Trim(Nz(Me.txtReason.value, ""))) = 0 Then
+        MsgBox "Please enter reason for adjustment.", vbExclamation, "Validation Error"
+        Me.txtReason.SetFocus
+        Exit Function
+    End If
+    
+    ' Warn about negative stock
+    If Nz(Me.txtQuantityAfter.value, 0) < 0 Then
+        Dim response As VbMsgBoxResult
+        response = MsgBox("This adjustment will result in NEGATIVE STOCK!" & vbCrLf & _
+                         "Quantity After: " & Me.txtQuantityAfter.value & vbCrLf & vbCrLf & _
+                         "Do you want to proceed?", vbYesNo + vbExclamation, "Negative Stock Warning")
+        If response = vbNo Then Exit Function
+    End If
+    
+    ValidateForm = True
+
+ExitHandler:
+    Exit Function
+
+ErrHandler:
+    Debug.Print "Error in ValidateForm: " & Err.Description
+    ValidateForm = False
+    Resume ExitHandler
+End Function
+
+Private Function SaveAdjustmentRecord() As Long
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim NewAdjustmentID As Long
+    
+    Debug.Print "  SaveAdjustmentRecord: Opening recordset..."
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("tblStockAdjustment", dbOpenDynaset)
+    
+    Debug.Print "  SaveAdjustmentRecord: Adding new record..."
+    rs.AddNew
+    
+    Debug.Print "  Setting AdjustmentDate: " & Me.txtAdjustmentDate.value
+    rs!AdjustmentDate = CDate(Me.txtAdjustmentDate.value)
+    
+    Debug.Print "  Setting StoreID: " & Me.cboStoreID.value
+    rs!StoreID = CLng(Me.cboStoreID.value)
+    
+    Debug.Print "  Setting ItemID: " & Me.cboItemID.value
+    rs!ItemID = CLng(Me.cboItemID.value)
+    
+    Debug.Print "  Setting AdjustmentTypeID: " & Me.cboAdjustmentTypeID.value
+    rs!AdjustmentTypeID = CLng(Me.cboAdjustmentTypeID.value)
+    
+    Debug.Print "  Setting QuantityBefore: " & Nz(Me.txtQuantityBefore.value, 0)
+    rs!QuantityBefore = CDbl(Nz(Me.txtQuantityBefore.value, 0))
+    
+    Debug.Print "  Setting AdjustmentQty: " & Me.txtAdjustmentQty.value
+    rs!AdjustmentQty = CDbl(Me.txtAdjustmentQty.value)
+    
+    Debug.Print "  Setting QuantityAfter: " & Me.txtQuantityAfter.value
+    rs!QuantityAfter = CDbl(Me.txtQuantityAfter.value)
+    
+    Debug.Print "  Setting Rate: " & Me.txtRate.value
+    rs!Rate = CCur(Me.txtRate.value)
+    
+    Debug.Print "  Setting TotalValueChange: " & Nz(Me.txtTotalValueChange.value, 0)
+    rs!TotalValueChange = CCur(Nz(Me.txtTotalValueChange.value, 0))
+    
+    Debug.Print "  Setting Reason: " & Left(Me.txtReason.value, 50) & "..."
+    rs!Reason = CStr(Me.txtReason.value)
+    
+    ' Optional ApprovedBy field
+    If Not IsNull(Me.txtApprovedBy.value) Then
+        If IsNumeric(Me.txtApprovedBy.value) And Trim(Me.txtApprovedBy.value) <> "" Then
+            Debug.Print "  Setting ApprovedBy: " & Me.txtApprovedBy.value
+            rs!ApprovedBy = CLng(Me.txtApprovedBy.value)
+        End If
+    End If
+    
+    Debug.Print "  Setting EnteredBy: " & Me.txtEnteredBy.value
+    rs!EnteredBy = CStr(Me.txtEnteredBy.value)
+    
+    If Not IsNull(Me.txtReferenceDoc.value) And Len(Trim(Me.txtReferenceDoc.value)) > 0 Then
+        Debug.Print "  Setting ReferenceDoc: " & Me.txtReferenceDoc.value
+        rs!ReferenceDoc = CStr(Me.txtReferenceDoc.value)
+    End If
+    
+    Debug.Print "  Setting EntryTimestamp: " & Now()
+    rs!EntryTimestamp = Now()
+    
+    Debug.Print "  Updating record..."
+    rs.Update
+    
+    Debug.Print "  Getting new AdjustmentID..."
+    rs.Bookmark = rs.LastModified
+    NewAdjustmentID = rs!AdjustmentID
+    
+    Debug.Print "  New AdjustmentID: " & NewAdjustmentID
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    SaveAdjustmentRecord = NewAdjustmentID
+
+ExitHandler:
+    Exit Function
+
+ErrHandler:
+    Debug.Print "  ERROR in SaveAdjustmentRecord"
+    Debug.Print "  Error Number: " & Err.Number
+    Debug.Print "  Error Description: " & Err.Description
+    SaveAdjustmentRecord = 0
+    
+    ' Re-raise the error so it gets caught by calling procedure
+    Err.Raise Err.Number, "SaveAdjustmentRecord", Err.Description
+End Function
+
+
+'====================================================
+' UPDATE STORE STOCK BASED ON ADJUSTMENT
+'====================================================
+Private Sub UpdateStoreStock(AdjustmentID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long
+    Dim QuantityAfter As Double
+    Dim Rate As Currency
+    Dim strSQL As String
+    Dim CurrentUser As String
+    
+    Set db = CurrentDb
+    
+    StoreID = CLng(Me.cboStoreID.value)
+    ItemID = CLng(Me.cboItemID.value)
+    QuantityAfter = CDbl(Me.txtQuantityAfter.value)
+    Rate = CCur(Me.txtRate.value)
+    CurrentUser = Environ("USERNAME")
+    
+    '====================================================
+    ' CHECK IF RECORD EXISTS IN tblStoreStock
+    '====================================================
+    strSQL = "SELECT * FROM tblStoreStock WHERE StoreID=" & StoreID & " AND ItemID=" & ItemID
+    Set rs = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If rs.EOF Then
+        ' No record exists - create new
+        rs.AddNew
+        rs!StoreID = StoreID
+        rs!ItemID = ItemID
+        rs!OpeningQty = 0
+        rs!ReceivedQty = 0
+        rs!IssuedQty = 0
+        rs!CurrentStock = QuantityAfter
+        rs!lastRate = Rate
+        rs!LastUpdated = Now()
+        rs!ModifiedBy = CurrentUser
+        rs.Update
+        Debug.Print "Created new stock record for ItemID " & ItemID & " at Store " & StoreID
+    Else
+        ' Record exists - update
+        rs.Edit
+        rs!CurrentStock = QuantityAfter
+        rs!lastRate = Rate
+        rs!LastUpdated = Now()
+        rs!ModifiedBy = CurrentUser
+        rs.Update
+        Debug.Print "Updated stock record for ItemID " & ItemID & " at Store " & StoreID & " to " & QuantityAfter
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in UpdateStoreStock: " & Err.Description
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'====================================================
+' RECORD ADJUSTMENT IN STOCK LEDGER
+'====================================================
+Private Sub RecordInStockLedger(AdjustmentID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long
+    Dim AdjustmentQty As Double
+    Dim QuantityAfter As Double
+    Dim Rate As Currency
+    Dim AdjustmentTypeID As Long
+    Dim EffectOnStock As String
+    Dim QtyIn As Double
+    Dim QtyOut As Double
+    Dim Amount As Currency
+    Dim CurrentUser As String
+    
+    Set db = CurrentDb
+    
+    StoreID = CLng(Me.cboStoreID.value)
+    ItemID = CLng(Me.cboItemID.value)
+    AdjustmentQty = CDbl(Me.txtAdjustmentQty.value)
+    QuantityAfter = CDbl(Me.txtQuantityAfter.value)
+    Rate = CCur(Me.txtRate.value)
+    AdjustmentTypeID = CLng(Me.cboAdjustmentTypeID.value)
+    CurrentUser = Environ("USERNAME")
+    
+    ' Get effect on stock (Increase or Decrease)
+    EffectOnStock = Nz(DLookup("EffectOnStock", "tblAdjustmentType", _
+                    "AdjustmentTypeID=" & AdjustmentTypeID), "")
+    
+    ' Determine QtyIn and QtyOut based on effect
+    If UCase(Trim(EffectOnStock)) = "INCREASE" Then
+        QtyIn = AdjustmentQty
+        QtyOut = 0
+        Amount = AdjustmentQty * Rate  ' Positive amount for increase
+    Else ' DECREASE
+        QtyIn = 0
+        QtyOut = AdjustmentQty
+        Amount = -1 * AdjustmentQty * Rate  ' Negative amount for decrease
+    End If
+    
+    Set rs = db.OpenRecordset("tblStockLedger", dbOpenDynaset)
+    
+    rs.AddNew
+    rs!ItemID = ItemID
+    rs!StoreID = StoreID
+    rs!TranDate = CDate(Me.txtAdjustmentDate.value)
+    rs!TranType = "Adjustment"
+    rs!TranRefID = AdjustmentID  ' Store as Long integer
+    rs!QtyIn = QtyIn
+    rs!QtyOut = QtyOut
+    rs!BalanceQty = QuantityAfter
+    rs!Rate = Rate
+    rs!Amount = Amount
+    rs!Remarks = Left(Me.txtReason.value, 255) ' Truncate if needed for Memo field display
+    rs!CreatedDate = Now()
+    rs!CreatedBy = CurrentUser
+    rs.Update
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Recorded in stock ledger: AdjustmentID=" & AdjustmentID & ", QtyIn=" & QtyIn & ", QtyOut=" & QtyOut & ", Amount=" & Amount
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in RecordInStockLedger: " & Err.Description
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'====================================================
+' LOAD EXISTING ADJUSTMENT DETAILS
+'====================================================
+Private Sub LoadAdjustmentDetails(AdjustmentID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM tblStockAdjustment WHERE AdjustmentID=" & AdjustmentID, dbOpenSnapshot)
+    
+    If Not rs.EOF Then
+        Me.txtAdjustmentDate.value = rs!AdjustmentDate
+        Me.cboStoreID.value = rs!StoreID
+        Me.cboItemID.value = rs!ItemID
+        Me.cboAdjustmentTypeID.value = rs!AdjustmentTypeID
+        Me.txtQuantityBefore.value = rs!QuantityBefore
+        Me.txtAdjustmentQty.value = rs!AdjustmentQty
+        Me.txtQuantityAfter.value = rs!QuantityAfter
+        Me.txtRate.value = rs!Rate
+        Me.txtTotalValueChange.value = rs!TotalValueChange
+        Me.txtReason.value = Nz(rs!Reason, "")
+        Me.txtApprovedBy.value = Nz(rs!ApprovedBy, "")
+        Me.txtEnteredBy.value = Nz(rs!EnteredBy, "")
+        Me.txtReferenceDoc.value = Nz(rs!ReferenceDoc, "")
+        
+        Debug.Print "Loaded adjustment ID: " & AdjustmentID
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading adjustment details: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in LoadAdjustmentDetails: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' CLEAR FORM CONTROLS
+'====================================================
+Private Sub ClearFormControls()
+    On Error Resume Next
+    
+    Me.cboStoreID.value = Null
+    Me.cboItemID.value = Null
+    Me.cboAdjustmentTypeID.value = Null
+    Me.txtQuantityBefore.value = Null
+    Me.txtAdjustmentQty.value = Null
+    Me.txtQuantityAfter.value = Null
+    Me.txtRate.value = Null
+    Me.txtTotalValueChange.value = Null
+    Me.txtReason.value = Null
+    Me.txtApprovedBy.value = Null
+    Me.txtReferenceDoc.value = Null
+    
+    Debug.Print "Form controls cleared"
+End Sub
+
+'====================================================
+' NEW ADJUSTMENT BUTTON (OPTIONAL)
+'====================================================
+Private Sub btnNew_Click()
+    On Error Resume Next
+    
+    Me.txtAdjustmentID.value = Null
+    Me.txtAdjustmentDate.value = Date
+    Me.txtEnteredBy.value = Environ("USERNAME")
+    Call ClearFormControls
+    Me.cboStoreID.SetFocus
+End Sub

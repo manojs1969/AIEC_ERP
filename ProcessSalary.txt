@@ -1,0 +1,370 @@
+Public Function FixRound(ByVal value As Double, Optional ByVal decimals As Integer = 2) As Double
+    ' More robust rounding function
+    If value = 0 Then
+        FixRound = 0
+        Exit Function
+    End If
+    
+    Dim factor As Double
+    factor = 10 ^ decimals
+    FixRound = Int(value * factor + 0.5 + 0.0000001) / factor ' Adding small epsilon to handle floating point issues
+End Function
+Private Function RoundUpToRupee(ByVal value As Double, Optional ByVal decimals As Integer = 2) As Double
+    RoundUpToRupee = WorksheetFunction.Ceiling(value, 1)
+End Function
+
+Private Sub btnProcessSalary_Click()
+    On Error GoTo ErrHandler
+
+    ' === Declare variables ===
+    Dim db As DAO.Database
+    Dim rsEmp As DAO.Recordset, rsSal As DAO.Recordset
+    Dim rsPayable As DAO.Recordset, rsLedger As DAO.Recordset
+    Dim rsEmpDB As DAO.Recordset
+    Dim fld As DAO.Field
+
+    Dim monthNum As Integer, yearNum As Integer
+    Dim startDate As Date, endDate As Date, prevMonth As Date
+    Dim EmpId As Long, SalMode As String
+    Dim PresentDays As Long, AbsentDays As Long
+    Dim MedicalLeave As Long, EarnedLeave As Long
+    Dim GrossSalary As Currency, DailyRate As Currency
+    Dim PFDeduct As Currency, ESIDeduct As Currency, PTAX As Currency
+    Dim NetSalary As Currency, SalaryDays As Long
+    Dim OpeningEL As Double, EarnedEL As Double, AvailedEL As Double
+    Dim ClosingEL As Double, EncashableEL As Double
+    Dim CLTaken As Long, MLTaken As Long
+    Dim PFEligible As String, ESIEligible As String
+    Dim msgSkipped As String, countInserted As Long
+    Dim sqlPrev As String
+    Dim TotalDaysInMonth As Long
+
+    ' === Validate month/year ===
+    monthNum = Nz(Me.cboMonth, 0)
+    yearNum = Nz(Me.cboYear, 0)
+    If monthNum = 0 Or yearNum = 0 Then
+        MsgBox "Please select valid month and year.", vbExclamation
+        Exit Sub
+    End If
+
+    startDate = DateSerial(yearNum, monthNum, 1)
+    endDate = DateSerial(yearNum, monthNum + 1, 0)
+    TotalDaysInMonth = Day(endDate)
+    prevMonth = DateAdd("m", -1, startDate)
+
+    Set db = CurrentDb
+
+    ' === Get employees with attendance ===
+    Set rsEmp = db.OpenRecordset( _
+        "SELECT DISTINCT EmpID FROM AttendTable " & _
+        "WHERE AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#", _
+        dbOpenSnapshot)
+
+    ' Open SalaryPayable table with error handling
+    On Error Resume Next
+    Set rsPayable = db.OpenRecordset("SalaryPayable", dbOpenDynaset)
+    If Err.Number <> 0 Then
+        MsgBox "Error opening SalaryPayable table: " & Err.Description, vbCritical
+        Exit Sub
+    End If
+    On Error GoTo ErrHandler
+
+    ' Verify SalaryPayable table structure
+    If rsPayable.Fields.Count = 0 Then
+        MsgBox "SalaryPayable table has no fields or cannot be accessed.", vbCritical
+        Exit Sub
+    End If
+
+    Do While Not rsEmp.EOF
+        EmpId = Nz(rsEmp!EmpId, 0)
+        If EmpId = 0 Then GoTo LoopNextEmp
+
+        ' === Skip if already processed ===
+        If DCount("*", "SalaryPayable", "EmpID=" & EmpId & " AND SalaryMonth=#" & Format(startDate, "yyyy-mm-dd") & "#") > 0 Then
+            msgSkipped = msgSkipped & vbCrLf & "EmpID " & EmpId & " - Already processed."
+            GoTo LoopNextEmp
+        End If
+
+        ' === Attendance summary ===
+        PresentDays = DCount("*", "AttendTable", "EmpID=" & EmpId & " AND AttendStatus='P' AND AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#")
+        AbsentDays = DCount("*", "AttendTable", "EmpID=" & EmpId & " AND AttendStatus='A' AND AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#")
+        MedicalLeave = DCount("*", "AttendTable", "EmpID=" & EmpId & " AND AttendStatus='ML' AND AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#")
+        EarnedLeave = DCount("*", "AttendTable", "EmpID=" & EmpId & " AND AttendStatus='EL' AND AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#")
+        SalaryDays = PresentDays + MedicalLeave + EarnedLeave
+
+        ' === Salary details ===
+        Set rsSal = db.OpenRecordset("SELECT * FROM SalaryDetails WHERE EmpID=" & EmpId, dbOpenSnapshot)
+        If rsSal.EOF Then
+            msgSkipped = msgSkipped & vbCrLf & "EmpID " & EmpId & " - No SalaryDetails found."
+            rsSal.Close: Set rsSal = Nothing
+            GoTo LoopNextEmp
+        End If
+
+        SalMode = UCase(Nz(rsSal!SalMode, "M"))
+
+        ' --- Earned component variables ---
+        Dim EarnedBasicPay As Currency, EarnedHR_A As Currency, EarnedConveAllowance As Currency
+        Dim EarnedFoodAllowance As Currency, EarnedOtherAllowance As Currency
+
+        If SalMode = "M" Then
+            ' === Monthly Mode ===
+            EarnedBasicPay = FixRound(Nz(rsSal!BasicPay, 0) * SalaryDays / TotalDaysInMonth, 2)
+            EarnedHR_A = FixRound(Nz(rsSal!HR_A, 0) * SalaryDays / TotalDaysInMonth, 2)
+            EarnedConveAllowance = FixRound(Nz(rsSal!ConveAllowance, 0) * SalaryDays / TotalDaysInMonth, 2)
+            EarnedFoodAllowance = FixRound(Nz(rsSal!FoodAllowance, 0) * SalaryDays / TotalDaysInMonth, 2)
+            EarnedOtherAllowance = FixRound(Nz(rsSal!OtherAllowance, 0) * SalaryDays / TotalDaysInMonth, 2)
+
+            ' Calculate DailyRate for reference only (no rounding needed here)
+            DailyRate = (Nz(rsSal!BasicPay, 0) + Nz(rsSal!HR_A, 0) + Nz(rsSal!ConveAllowance, 0) + _
+                        Nz(rsSal!FoodAllowance, 0) + Nz(rsSal!OtherAllowance, 0)) / TotalDaysInMonth
+        Else
+            ' === Daily Mode ===
+            EarnedBasicPay = FixRound(Nz(rsSal!BasicPay, 0) * SalaryDays, 2)
+            EarnedHR_A = FixRound(Nz(rsSal!HR_A, 0) * SalaryDays, 2)
+            EarnedConveAllowance = FixRound(Nz(rsSal!ConveAllowance, 0) * SalaryDays, 2)
+            EarnedFoodAllowance = FixRound(Nz(rsSal!FoodAllowance, 0) * SalaryDays, 2)
+            EarnedOtherAllowance = FixRound(Nz(rsSal!OtherAllowance, 0) * SalaryDays, 2)
+
+            DailyRate = Nz(rsSal!BasicPay, 0)
+        End If
+
+        ' Calculate GrossSalary by summing rounded components
+        GrossSalary = RoundUpToRupee(EarnedBasicPay + EarnedHR_A + EarnedConveAllowance + EarnedFoodAllowance + EarnedOtherAllowance)
+        
+        rsSal.Close: Set rsSal = Nothing
+
+        ' === PF/ESI eligibility ===
+        Set rsEmpDB = db.OpenRecordset("SELECT PFEligible, ESIEligible FROM EmpDB WHERE IDNo=" & EmpId, dbOpenSnapshot)
+        If rsEmpDB.EOF Then
+            msgSkipped = msgSkipped & vbCrLf & "EmpID " & EmpId & " - Not found in EmpDB."
+            rsEmpDB.Close: Set rsEmpDB = Nothing
+            GoTo LoopNextEmp
+        End If
+        PFEligible = UCase(Nz(rsEmpDB!PFEligible, "N"))
+        ESIEligible = UCase(Nz(rsEmpDB!ESIEligible, "N"))
+        rsEmpDB.Close: Set rsEmpDB = Nothing
+
+        ' === Deductions and net pay - USE FixRound CONSISTENTLY ===
+        PFDeduct = IIf(PFEligible = "Y", RoundUpToRupee(EarnedBasicPay * 0.12), 0)
+        ESIDeduct = IIf(ESIEligible = "Y", RoundUpToRupee(GrossSalary * 0.0075), 0)
+
+        ' === Calculate Professional Tax (P_Tax) ===
+        If GrossSalary >= 13333.33 And GrossSalary <= 25000 Then
+            PTAX = 125
+        ElseIf GrossSalary > 25000 Then
+            If monthNum < 12 Then
+                PTAX = 200
+            Else
+                PTAX = 300
+            End If
+        Else
+            PTAX = 0
+        End If
+
+        ' TDS entered manually, so 0 here
+        Dim TDS As Currency
+        TDS = 0
+
+        ' Calculate NetSalary with proper rounding - THIS IS THE KEY FIX
+        Dim TotalDeductions As Currency
+        TotalDeductions = PFDeduct + ESIDeduct + PTAX + TDS
+        NetSalary = FixRound(GrossSalary - TotalDeductions, 2)
+
+        ' === DEBUG: Check rounding ===
+        Debug.Print "EmpID: " & EmpId & _
+                    " | Gross: " & GrossSalary & _
+                    " | PF: " & PFDeduct & _
+                    " | ESI: " & ESIDeduct & _
+                    " | PTAX: " & PTAX & _
+                    " | Total Ded: " & TotalDeductions & _
+                    " | Net: " & NetSalary
+
+        ' === Insert into SalaryPayable with field validation ===
+        On Error Resume Next
+        rsPayable.AddNew
+        
+        ' Use error handling for each field assignment
+        Call SafeFieldAssign(rsPayable, "EmpId", EmpId)
+        Call SafeFieldAssign(rsPayable, "SalaryMonth", startDate)
+        Call SafeFieldAssign(rsPayable, "PresentDays", PresentDays)
+        Call SafeFieldAssign(rsPayable, "AbsentDays", AbsentDays)
+        Call SafeFieldAssign(rsPayable, "MLAvailed", MedicalLeave)
+        Call SafeFieldAssign(rsPayable, "ELAvailed", EarnedLeave)
+        Call SafeFieldAssign(rsPayable, "PayableDays", SalaryDays)
+
+        ' Earned components
+        Call SafeFieldAssign(rsPayable, "EarnedBasicPay", EarnedBasicPay)
+        Call SafeFieldAssign(rsPayable, "EarnedHR_A", EarnedHR_A)
+        Call SafeFieldAssign(rsPayable, "EarnedConveAllowance", EarnedConveAllowance)
+        Call SafeFieldAssign(rsPayable, "EarnedFoodAllowance", EarnedFoodAllowance)
+        Call SafeFieldAssign(rsPayable, "EarnedOtherAllowance", EarnedOtherAllowance)
+
+        Call SafeFieldAssign(rsPayable, "GrossSalary", GrossSalary)
+        Call SafeFieldAssign(rsPayable, "PF_Deduction", PFDeduct)
+        Call SafeFieldAssign(rsPayable, "ESI_Deduction", ESIDeduct)
+        Call SafeFieldAssign(rsPayable, "P_Tax", PTAX)
+        Call SafeFieldAssign(rsPayable, "TDS", TDS)
+        Call SafeFieldAssign(rsPayable, "Adv_Deduction", 0)
+        Call SafeFieldAssign(rsPayable, "OtherDeductions", 0)
+        Call SafeFieldAssign(rsPayable, "NetPayable", NetSalary)
+        Call SafeFieldAssign(rsPayable, "Remarks", "")
+        Call SafeFieldAssign(rsPayable, "status", "Draft")
+        Call SafeFieldAssign(rsPayable, "ProcessedBy", Environ("Username"))
+        Call SafeFieldAssign(rsPayable, "TimeStamp", Now)
+        
+        rsPayable.Update
+        
+        If Err.Number <> 0 Then
+            msgSkipped = msgSkipped & vbCrLf & "EmpID " & EmpId & " - Error updating SalaryPayable: " & Err.Description
+            rsPayable.CancelUpdate
+            On Error GoTo ErrHandler
+            GoTo LoopNextEmp
+        End If
+        
+        On Error GoTo ErrHandler
+        countInserted = countInserted + 1
+
+        ' === Leave Ledger ===
+        EarnedEL = 1.5
+        AvailedEL = EarnedLeave
+        CLTaken = DCount("*", "AttendTable", "EmpID=" & EmpId & " AND AttendStatus='CL' AND AttendDate BETWEEN #" & Format(startDate, "yyyy-mm-dd") & "# AND #" & Format(endDate, "yyyy-mm-dd") & "#")
+        MLTaken = MedicalLeave
+
+        sqlPrev = "SELECT TOP 1 ClosingEL FROM LeaveLedger WHERE EmpID=" & EmpId & " AND LeaveMonth <= #" & Format(prevMonth, "yyyy-mm-dd") & "# ORDER BY LeaveMonth DESC"
+        Set rsLedger = db.OpenRecordset(sqlPrev, dbOpenSnapshot)
+
+        If rsLedger.EOF Then
+            OpeningEL = 0
+        Else
+            OpeningEL = Nz(rsLedger!ClosingEL, 0)
+        End If
+        rsLedger.Close: Set rsLedger = Nothing
+
+        ClosingEL = OpeningEL + EarnedEL - AvailedEL
+        EncashableEL = IIf(ClosingEL > 90, ClosingEL - 90, 0)
+
+        ' Open LeaveLedger with error handling
+        On Error Resume Next
+        Set rsLedger = db.OpenRecordset("LeaveLedger", dbOpenDynaset)
+        If Err.Number <> 0 Then
+            msgSkipped = msgSkipped & vbCrLf & "EmpID " & EmpId & " - Error opening LeaveLedger: " & Err.Description
+            On Error GoTo ErrHandler
+            GoTo LoopNextEmp
+        End If
+        On Error GoTo ErrHandler
+        
+        rsLedger.AddNew
+        Call SafeFieldAssign(rsLedger, "EmpId", EmpId)
+        Call SafeFieldAssign(rsLedger, "LeaveMonth", startDate)
+        Call SafeFieldAssign(rsLedger, "OpeningEL", OpeningEL)
+        Call SafeFieldAssign(rsLedger, "EarnedEL", EarnedEL)
+        Call SafeFieldAssign(rsLedger, "AvailedEL", AvailedEL)
+        Call SafeFieldAssign(rsLedger, "ClosingEL", ClosingEL)
+        Call SafeFieldAssign(rsLedger, "EncashableEL", EncashableEL)
+        Call SafeFieldAssign(rsLedger, "CLTaken", CLTaken)
+        Call SafeFieldAssign(rsLedger, "MLTaken", MLTaken)
+        Call SafeFieldAssign(rsLedger, "PostedBy", Environ("Username"))
+        Call SafeFieldAssign(rsLedger, "TimeStamp", Now)
+        rsLedger.Update
+        rsLedger.Close: Set rsLedger = Nothing
+
+LoopNextEmp:
+        rsEmp.MoveNext
+    Loop
+
+    ' --- Cleanup ---
+    If Not rsEmp Is Nothing Then rsEmp.Close: Set rsEmp = Nothing
+    If Not rsPayable Is Nothing Then rsPayable.Close: Set rsPayable = Nothing
+
+    ' --- Result message ---
+    Dim msg As String
+    msg = "Salary & Leave Ledger processed for " & Format(startDate, "mmmm yyyy") & "." & vbCrLf & _
+          "Records inserted: " & countInserted
+    If Len(msgSkipped) > 0 Then msg = msg & vbCrLf & vbCrLf & "Skipped employees:" & vbCrLf & msgSkipped
+    MsgBox msg, vbInformation
+    
+    ' Only call ReprocessSalary if it exists and we have successful inserts
+    If countInserted >= 0 Then
+        On Error Resume Next
+        ReprocessSalary Month(startDate), Year(startDate)
+        On Error GoTo ErrHandler
+    End If
+    If DCount("*", "SalaryPayable", "SalaryMonth=#" & Format(startDate, "yyyy-mm-dd") & "# AND Status='Draft'") > 0 Then
+        FinalizeSalary Month(startDate), Year(startDate)
+    End If
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description & vbCrLf & _
+           "At line: " & Erl, vbCritical
+    On Error Resume Next
+    If Not rsEmp Is Nothing Then rsEmp.Close: Set rsEmp = Nothing
+    If Not rsSal Is Nothing Then rsSal.Close: Set rsSal = Nothing
+    If Not rsPayable Is Nothing Then rsPayable.Close: Set rsPayable = Nothing
+    If Not rsLedger Is Nothing Then rsLedger.Close: Set rsLedger = Nothing
+    If Not rsEmpDB Is Nothing Then rsEmpDB.Close: Set rsEmpDB = Nothing
+End Sub
+
+' === Helper function for safe field assignment ===
+Private Sub SafeFieldAssign(rs As DAO.Recordset, fieldName As String, value As Variant)
+    On Error Resume Next
+    rs.Fields(fieldName).value = value
+    If Err.Number <> 0 Then
+        ' Field doesn't exist or other error - skip silently or log as needed
+        Err.Clear
+    End If
+End Sub
+Private Sub CheckTableStructure()
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim fld As DAO.Field
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SalaryPayable", dbOpenDynaset)
+    
+    Debug.Print "SalaryPayable Fields:"
+    For Each fld In rs.Fields
+        Debug.Print " - " & fld.Name & " (" & fld.Type & ")"
+    Next fld
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+End Sub
+Public Sub ReprocessSalary(monthNum As Integer, yearNum As Integer)
+    Dim db As DAO.Database
+    Dim startDate As Date
+    Dim resp As VbMsgBoxResult
+    
+    startDate = DateSerial(yearNum, monthNum, 1)
+    Set db = CurrentDb
+    
+    resp = MsgBox("Do you want to delete existing Draft salaries for " & Format(startDate, "mmmm yyyy") & " before re-processing?", _
+                  vbYesNo + vbQuestion)
+    If resp = vbYes Then
+        ' Delete draft salaries
+        db.Execute "DELETE FROM SalaryPayable WHERE SalaryMonth=#" & Format(startDate, "yyyy-mm-dd") & "# AND Status='Draft'", dbFailOnError
+        db.Execute "DELETE FROM LeaveLedger WHERE LeaveMonth=#" & Format(startDate, "yyyy-mm-dd") & "#", dbFailOnError
+        
+        MsgBox "Draft salaries deleted. You can now re-run the salary process.", vbInformation
+    Else
+        MsgBox "Re-processing cancelled.", vbInformation
+    End If
+End Sub
+Public Sub FinalizeSalary(monthNum As Integer, yearNum As Integer)
+    Dim db As DAO.Database
+    Dim startDate As Date
+    Dim resp As VbMsgBoxResult
+    
+    startDate = DateSerial(yearNum, monthNum, 1)
+    Set db = CurrentDb
+    
+    resp = MsgBox("Do you want to finalize salaries for " & Format(startDate, "mmmm yyyy") & "?" & vbCrLf & _
+                  "Once finalized, reprocessing will not be allowed.", vbYesNo + vbQuestion)
+    If resp = vbYes Then
+        db.Execute "UPDATE SalaryPayable SET Status='Finalized' WHERE SalaryMonth=#" & Format(startDate, "yyyy-mm-dd") & "# AND Status='Draft'", dbFailOnError
+        MsgBox "Salaries for " & Format(startDate, "mmmm yyyy") & " have been finalized.", vbInformation
+    Else
+        MsgBox "Salaries remain in Draft status.", vbInformation
+    End If
+End Sub

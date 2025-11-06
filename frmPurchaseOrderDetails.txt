@@ -1,0 +1,158 @@
+Private Sub txtQuantityOrdered_AfterUpdate()
+    Call CalculateAmount
+End Sub
+
+Private Sub txtRate_AfterUpdate()
+    Call CalculateAmount
+End Sub
+
+Private Sub CalculateAmount()
+    On Error Resume Next
+
+    ' Recalculate amount only if both controls have valid numeric entries
+    If Nz(Me.txtQuantityOrdered, "") <> "" And Nz(Me.txtRate, "") <> "" Then
+        Me.txtAmount.value = Nz(Me.txtQuantityOrdered.value, 0) * Nz(Me.txtRate.value, 0)
+        Me.Refresh                     ' Ensure form UI updates bound fields
+    Else
+        Me.txtAmount.value = 0
+    End If
+End Sub
+
+Private Sub btnAddItem_Click()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim lngPOID As Long
+    Dim lngItemID As Long
+    Dim dblQty As Double
+    Dim curRate As Currency
+    Dim curAmount As Currency
+    Dim dblReceived As Double
+    Dim dblBalance As Double
+    Dim lngItemCount As Long ' *** NEW VARIABLE ***
+
+    '------------------------------
+    ' Validate Purchase Order ID
+    '------------------------------
+    If IsNull(Me.POID) Or Nz(Me.POID, 0) = 0 Then
+        MsgBox "Please select a valid Purchase Order ID before adding items.", vbExclamation, "POID Missing"
+        Me.POID.SetFocus
+        Exit Sub
+    End If
+
+    lngPOID = Nz(Me.POID, 0)
+
+    '------------------------------
+    ' Validate Item ID
+    '------------------------------
+    If IsNull(Me.cboItemID) Or Nz(Me.cboItemID, 0) = 0 Then
+        MsgBox "Item selection is mandatory before saving.", vbCritical, "Missing Item"
+        Me.cboItemID.SetFocus
+        Exit Sub
+    End If
+
+    lngItemID = Nz(Me.cboItemID, 0)
+    
+    '------------------------------
+    ' Validate Quantity and Rate
+    '------------------------------
+    If Nz(Me.txtQuantityOrdered, 0) <= 0 Then
+        MsgBox "Please enter a valid Quantity greater than zero.", vbExclamation, "Invalid Quantity"
+        Me.txtQuantityOrdered.SetFocus
+        Exit Sub
+    End If
+
+    If Nz(Me.txtRate, 0) <= 0 Then
+        MsgBox "Please enter a valid Rate.", vbExclamation, "Invalid Rate"
+        Me.txtRate.SetFocus
+        Exit Sub
+    End If
+
+    '-------------------------------------------------
+    ' *** NEW VALIDATION: Check for 7-item limit ***
+    '-------------------------------------------------
+    ' Count items already in tblPurchaseOrderDetails for this PO
+    lngItemCount = DCount("*", "tblPurchaseOrderDetails", "POID = " & lngPOID)
+    
+    If lngItemCount >= 7 Then
+        MsgBox "This Purchase Order (POID " & lngPOID & ") already has " & lngItemCount & " items." & _
+               vbCrLf & "You cannot add more than 7 items to a single PO.", vbExclamation, "PO Limit Reached"
+        Exit Sub
+    End If
+    '-------------------------------------------------
+    ' *** END OF NEW VALIDATION ***
+    '-------------------------------------------------
+
+
+    '------------------------------
+    ' Perform Calculations
+    '------------------------------
+    dblQty = Nz(Me.txtQuantityOrdered, 0)
+    curRate = Nz(Me.txtRate, 0)
+    curAmount = dblQty * curRate
+    dblReceived = Nz(Me.txtReceivedQty, 0)
+    dblBalance = dblQty - dblReceived
+
+    Me.txtAmount = curAmount
+    Me.txtBalanceQty = dblBalance
+
+    '------------------------------
+    ' Add Record to Table
+    '------------------------------
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("tblPurchaseOrderDetails", dbOpenDynaset)
+
+    rs.AddNew
+    rs!POID = lngPOID
+    rs!ItemID = lngItemID
+    rs!QuantityOrdered = dblQty
+    rs!Rate = curRate
+    rs!Amount = curAmount
+    rs!Remarks = Nz(Me.txtRemarks, "")
+    rs!ReceivedQty = dblReceived
+    rs!BalanceQty = dblBalance
+    rs.Update
+
+    '------------------------------
+    ' Reset Controls for Next Entry
+    '------------------------------
+    Me.cboItemID = Null
+    Me.txtQuantityOrdered = Null
+    Me.txtRate = Null
+    Me.txtAmount = Null
+    Me.txtRemarks = Null
+    Me.txtReceivedQty = Null
+    Me.txtBalanceQty = Null
+
+    '------------------------------
+    ' Refresh and Set Focus to POID
+    '------------------------------
+    If ControlExists("POItemDetails") Then
+        Me.POItemDetails.Requery
+    End If
+
+    ' *** MODIFIED SUCCESS MESSAGE to show new count ***
+    MsgBox "Item added successfully to Purchase Order #" & lngPOID & "." & _
+           vbCrLf & "Total items on this PO: " & (lngItemCount + 1), vbInformation, "Success"
+    Me.POID.SetFocus
+
+ExitProc:
+    On Error Resume Next
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error adding item: " & Err.Description, vbCritical, "Error"
+    Resume ExitProc
+End Sub
+
+'------------------------------
+' Helper Function: Check if Control Exists
+'------------------------------
+Private Function ControlExists(ctrlName As String) As Boolean
+    On Error Resume Next
+    ControlExists = Not (Me.Controls(ctrlName) Is Nothing)
+End Function

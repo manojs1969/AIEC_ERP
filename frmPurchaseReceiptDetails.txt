@@ -1,0 +1,320 @@
+Option Compare Database
+Option Explicit
+
+Private Sub Form_Load()
+    'Just clear existing fields when form opens
+    Call ClearDetailControls
+End Sub
+
+Private Sub cboGRNID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim GRNID As Long
+    GRNID = Nz(Me.cboGRNID.value, 0)
+    
+    If GRNID = 0 Then
+        MsgBox "Please select a valid GRN to load details.", vbExclamation
+        Exit Sub
+    End If
+    
+    Call LoadGRNDetails(GRNID)
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error in cboGRNID_AfterUpdate: " & Err.Description, vbCritical
+    Resume ExitHandler
+End Sub
+
+Private Sub LoadGRNDetails(GRNID As Long)
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rsHeader As DAO.Recordset
+    Dim rsDetail As DAO.Recordset
+    Dim rsPO As DAO.Recordset
+    Dim strSQL As String
+    Dim POID As Long
+    Dim i As Integer
+    Dim ctl As Control
+
+    Set db = CurrentDb
+
+    '------------------------------------------------------
+    ' 1. FIRST Check if GRN exists in tblPurchaseReceiptHeader
+    '------------------------------------------------------
+    strSQL = "SELECT POID FROM tblPurchaseReceiptHeader WHERE GRNID=" & GRNID
+    Set rsHeader = db.OpenRecordset(strSQL, dbOpenSnapshot)
+    
+    If rsHeader.EOF Then
+        MsgBox "GRN ID " & GRNID & " not found in GRN Header.", vbExclamation
+        GoTo ExitHandler
+    End If
+
+    POID = Nz(rsHeader!POID, 0)
+    rsHeader.Close
+
+    If POID = 0 Then
+        MsgBox "No Purchase Order linked with this GRN.", vbExclamation
+        GoTo ExitHandler
+    End If
+
+    '------------------------------------------------------
+    ' 2. FIRST check tblPurchaseReceiptDetails for existing entries
+    '------------------------------------------------------
+    strSQL = "SELECT * FROM tblPurchaseReceiptDetails WHERE GRNID=" & GRNID & " ORDER BY PRDetailID;"
+    Set rsDetail = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If rsDetail.EOF Then
+        ' No existing receipt details found - create from PO
+        rsDetail.Close
+        MsgBox "No existing GRN details found. Creating from Purchase Order...", vbInformation
+        
+        strSQL = "SELECT PODetailID, ItemID, QuantityOrdered, Rate " & _
+                 "FROM tblPurchaseOrderDetails WHERE POID=" & POID & ";"
+        Set rsPO = db.OpenRecordset(strSQL, dbOpenSnapshot)
+        Set rsDetail = db.OpenRecordset("tblPurchaseReceiptDetails", dbOpenDynaset)
+
+        ' Use debug version to find which field is causing error
+        Do While Not rsPO.EOF
+            On Error Resume Next
+            rsDetail.AddNew
+            If Err.Number <> 0 Then
+                Debug.Print "Error on AddNew: " & Err.Description
+                Exit Do
+            End If
+            
+            rsDetail!GRNID = GRNID
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting GRNID: " & Err.Description & " | Value: " & GRNID
+                Exit Do
+            End If
+            
+            rsDetail!POID = POID
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting POID: " & Err.Description & " | Value: " & POID
+                Exit Do
+            End If
+            
+            rsDetail!PODetailID = rsPO!PODetailID
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting PODetailID: " & Err.Description & " | Value: " & rsPO!PODetailID
+                Exit Do
+            End If
+            
+            rsDetail!ItemID = rsPO!ItemID
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting ItemID: " & Err.Description & " | Value: " & rsPO!ItemID
+                Exit Do
+            End If
+            
+            rsDetail!ReceivedQty = 0
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting ReceivedQty: " & Err.Description
+                Exit Do
+            End If
+            
+            rsDetail!Rate = Nz(rsPO!Rate, 0)
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting Rate: " & Err.Description & " | Value: " & Nz(rsPO!Rate, 0)
+                Exit Do
+            End If
+            
+            rsDetail!Amount = 0
+            If Err.Number <> 0 Then
+                Debug.Print "Error setting Amount: " & Err.Description
+                Exit Do
+            End If
+            
+            rsDetail.Update
+            If Err.Number <> 0 Then
+                Debug.Print "Error on Update: " & Err.Description
+                MsgBox "Error creating GRN details: " & Err.Description, vbCritical
+                Exit Do
+            Else
+                Debug.Print "Record added successfully!"
+            End If
+            
+            rsPO.MoveNext
+        Loop
+
+        rsPO.Close
+        rsDetail.Close
+        
+        ' Reopen recordset to get the newly created details
+        Set rsDetail = db.OpenRecordset(strSQL, dbOpenDynaset)
+    End If
+
+    '------------------------------------------------------
+    ' 3. Now load the details into form controls
+    '------------------------------------------------------
+    Call ClearDetailControls
+
+    i = 0
+    If Not rsDetail.EOF Then
+        rsDetail.MoveFirst
+    End If
+    
+    Do While Not rsDetail.EOF And i <= 6
+        ' Enable controls before setting values
+        For Each ctl In Me.Controls
+            If ctl.Name Like "*ID" & i Or ctl.Name Like "*Qty" & i Or ctl.Name Like "*Rate" & i Or ctl.Name Like "*Amount" & i Then
+                ctl.Locked = False
+                ctl.Enabled = True
+            End If
+        Next ctl
+
+        ' Set control values
+        Me.Controls("txtPRDetailID" & i).value = Nz(rsDetail!PRDetailID, 0)
+        Me.Controls("cboGRNID" & i).value = Nz(rsDetail!GRNID, 0)
+        Me.Controls("cboPOID" & i).value = Nz(rsDetail!POID, 0)
+        Me.Controls("cboPODetailID" & i).value = Nz(rsDetail!PODetailID, 0)
+        Me.Controls("cboItemID" & i).value = Nz(rsDetail!ItemID, 0)
+        Me.Controls("txtReceivedQty" & i).value = Nz(rsDetail!ReceivedQty, 0)
+        Me.Controls("txtRate" & i).value = Nz(rsDetail!Rate, 0)
+        Me.Controls("txtAmount" & i).value = Nz(rsDetail!Amount, 0)
+        Me.Controls("txtQuantityOrdered" & i).value = Nz(DLookup("QuantityOrdered", _
+            "tblPurchaseOrderDetails", "PODetailID=" & Nz(rsDetail!PODetailID, 0)), 0)
+
+        i = i + 1
+        rsDetail.MoveNext
+    Loop
+
+    rsDetail.Close
+
+    If i = 0 Then
+        MsgBox "No GRN details available for this GRN.", vbInformation
+    Else
+        MsgBox "Loaded " & i & " GRN detail rows successfully.", vbInformation
+    End If
+
+ExitHandler:
+    On Error Resume Next
+    If Not rsHeader Is Nothing Then Set rsHeader = Nothing
+    If Not rsDetail Is Nothing Then Set rsDetail = Nothing
+    If Not rsPO Is Nothing Then Set rsPO = Nothing
+    If Not db Is Nothing Then Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading GRN details: " & Err.Description, vbCritical
+    Resume ExitHandler
+End Sub
+' Helper function to safely set control values
+Private Sub SetControlValue(ctl As Control, value As Variant)
+    On Error Resume Next
+    If Not ctl Is Nothing Then
+        ctl.value = value
+    End If
+End Sub
+
+Private Sub ClearDetailControls()
+    Dim i As Integer
+    On Error Resume Next
+    For i = 0 To 6
+        Me.Controls("cboGRNID" & i).value = Null
+        Me.Controls("cboPOID" & i).value = Null
+        Me.Controls("cboPODetailID" & i).value = Null
+        Me.Controls("cboItemID" & i).value = Null
+        Me.Controls("txtQuantityOrdered" & i).value = Null
+        Me.Controls("txtReceivedQty" & i).value = Null
+        Me.Controls("txtRate" & i).value = Null
+        Me.Controls("txtAmount" & i).value = Null
+        ' Clear balance info labels
+        Me.Controls("lblBalanceInfo" & i).Caption = "Balance: 0"
+    Next i
+    On Error GoTo 0
+End Sub
+
+'=============================
+'  SAVE OR UPDATE GRN ITEMS
+'=============================
+Private Sub btnSaveItem_Click()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim GRNID As Long
+    Dim POID As Long
+    Dim PODetailID As Long
+    Dim PRDetailID As Long
+    Dim ItemID As Long
+    Dim QtyOrdered As Double
+    Dim QtyReceived As Double
+    Dim Rate As Double
+    Dim Amount As Double
+    Dim ExistingQty As Double
+    Dim NewReceivedTotal As Double
+
+    Set db = CurrentDb
+    db.BeginTrans
+
+    For i = 0 To 6
+        ' Skip blank rows
+        If Nz(Me.Controls("cboItemID" & i).value, 0) = 0 Then GoTo NextRow
+
+        PRDetailID = Nz(Me.Controls("txtPRDetailID" & i).value, 0)
+        GRNID = Nz(Me.Controls("cboGRNID" & i).value, 0)
+        POID = Nz(Me.Controls("cboPOID" & i).value, 0)
+        PODetailID = Nz(Me.Controls("cboPODetailID" & i).value, 0)
+        ItemID = Nz(Me.Controls("cboItemID" & i).value, 0)
+        QtyOrdered = Nz(Me.Controls("txtQuantityOrdered" & i).value, 0)
+        QtyReceived = Nz(Me.Controls("txtReceivedQty" & i).value, 0)
+        Rate = Nz(Me.Controls("txtRate" & i).value, 0)
+        Amount = Nz(Me.Controls("txtAmount" & i).value, 0)
+
+        ' Validate quantity
+        If QtyReceived <= 0 Then
+            MsgBox "Row " & (i + 1) & ": Received Qty must be greater than zero.", vbExclamation
+            db.Rollback
+            Exit Sub
+        End If
+
+        '=======================
+        '  Insert or Update record
+        '=======================
+        If PRDetailID = 0 Then
+            ' New Record
+            db.Execute "INSERT INTO tblPurchaseReceiptDetails " & _
+                       "(GRNID, POID, PODetailID, ItemID, ReceivedQty, Rate, Amount) " & _
+                       "VALUES (" & GRNID & ", " & POID & ", " & PODetailID & ", " & ItemID & _
+                       ", " & QtyReceived & ", " & Rate & ", " & Amount & ");", dbFailOnError
+        Else
+            ' Update existing
+            db.Execute "UPDATE tblPurchaseReceiptDetails SET " & _
+                       "ReceivedQty=" & QtyReceived & ", Rate=" & Rate & ", Amount=" & Amount & _
+                       " WHERE PRDetailID=" & PRDetailID & ";", dbFailOnError
+        End If
+
+        '=======================
+        '  Update PurchaseOrderDetails
+        '=======================
+        ExistingQty = Nz(DLookup("ReceivedQty", "tblPurchaseOrderDetails", "PODetailID=" & PODetailID), 0)
+        NewReceivedTotal = ExistingQty + QtyReceived
+
+        db.Execute "UPDATE tblPurchaseOrderDetails SET " & _
+                   "ReceivedQty=" & NewReceivedTotal & ", " & _
+                   "BalanceQty=QuantityOrdered-" & NewReceivedTotal & _
+                   " WHERE PODetailID=" & PODetailID & ";", dbFailOnError
+
+NextRow:
+    Next i
+
+    db.CommitTrans
+    MsgBox "GRN items saved and Purchase Order updated successfully.", vbInformation, "Save Complete"
+
+ExitHandler:
+    On Error Resume Next
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    If Not db Is Nothing Then
+        db.Rollback
+    End If
+    MsgBox "Error saving GRN items: " & Err.Description, vbCritical, "Save Error"
+    Resume ExitHandler
+End Sub

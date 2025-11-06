@@ -1,0 +1,201 @@
+Private Sub btnShowReport_Click()
+    ' Trigger main report generation procedure when the button is clicked
+    Call GenerateUtilisationReport
+End Sub
+
+Private Sub GenerateUtilisationReport()
+    On Error GoTo ErrorHandler
+
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim rs As DAO.Recordset
+
+    Dim xlApp As Object, xlWbk As Object, xlWsh As Object
+
+    Dim selectedMonth As Integer, selectedYear As Integer, monthText As String
+    Dim reportLocation As Long, siteName As String
+    Dim reportDate As Date, daysInMonth As Integer
+    Dim pivotHeaderList As String, i As Long
+
+    Dim strSQL As String, strFilePath As String
+
+    Dim headerCol As Long, lastDataRow As Long, totalRow As Long
+    Dim meqCol As Long, totValCol As Long
+    Dim lastCol As Long, meqFinalCol As Long, totValFinalCol As Long
+
+    '======== Inputs (your layout) ========
+    If IsNull(Me.cboSite) Or IsNull(Me.cboMth) Then
+        MsgBox "Please select both Site and Report Month.", vbExclamation, "Input Required"
+        Exit Sub
+    End If
+
+    selectedMonth = Me.cboMth.Column(0) ' month number (1–12)
+    selectedYear = Me.cboMth.Column(1)  ' year (e.g., 2025)
+    monthText = monthName(selectedMonth)
+
+    reportLocation = Me.cboSite.Value
+    siteName = Nz(Me.cboSite.Column(1), "Unknown Site")
+
+    reportDate = DateSerial(selectedYear, selectedMonth, 1)
+    strFilePath = CurrentProject.Path & "\Monthly_Consumption_Report_" & _
+                  Format(reportDate, "yyyy_mm") & ".xlsx"
+
+    '======== Build Pivot Header List (1..days) ========
+    daysInMonth = Day(DateSerial(selectedYear, selectedMonth + 1, 0))
+    pivotHeaderList = ""
+    For i = 1 To daysInMonth
+        If Len(pivotHeaderList) > 0 Then pivotHeaderList = pivotHeaderList & ", "
+        pivotHeaderList = pivotHeaderList & i
+    Next i
+
+    '======== SQL (no Format() so results are numeric) ========
+    strSQL = _
+      "TRANSFORM First(Util.ExQty) AS ExQty " & _
+      "SELECT Util.ItemName, Util.UOM, Rate.ItemType, " & _
+      "       Sum(Util.ExQty) AS MExQty, " & _
+      "       Sum(Util.ExQty * Rate.GenRate) AS TotValue " & _
+      "FROM Util INNER JOIN Rate ON (Util.LocationID = Rate.LocationID) " & _
+      "                   AND (Util.ItemName   = Rate.ItemName) " & _
+      "WHERE Month(Util.ExDate) = " & selectedMonth & _
+      "  AND Year(Util.ExDate)  = " & selectedYear & _
+      "  AND Util.LocationID    = " & reportLocation & " " & _
+      "GROUP BY Util.ItemName, Util.UOM, Rate.ItemType " & _
+      "ORDER BY Rate.ItemType " & _
+      "PIVOT DatePart('d', Util.ExDate) IN (" & pivotHeaderList & ");"
+
+    '======== Run query ========
+    Set db = CurrentDb
+    On Error Resume Next
+    db.QueryDefs.Delete "TempConsumptionReportQuery"
+    On Error GoTo ErrorHandler
+    Set qdf = db.CreateQueryDef("TempConsumptionReportQuery", strSQL)
+    Set rs = qdf.OpenRecordset(dbOpenSnapshot)
+
+    If rs.BOF And rs.EOF Then
+        MsgBox "No data found for the selected month and site.", vbInformation, "No Data"
+        GoTo Cleanup
+    End If
+
+    '======== Excel setup ========
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    Set xlWbk = xlApp.Workbooks.Add
+    Set xlWsh = xlWbk.Sheets(1)
+
+    ' Headers (row 3), then data (row 4)
+    headerCol = 1
+    For i = 0 To rs.Fields.Count - 1
+        xlWsh.Cells(3, headerCol).Value = rs.Fields(i).Name
+        xlWsh.Cells(3, headerCol).Font.Bold = True
+        headerCol = headerCol + 1
+    Next i
+
+    xlWsh.Cells(4, 1).CopyFromRecordset rs
+
+    ' Last row with data
+    lastDataRow = xlWsh.Cells(xlWsh.Rows.Count, "A").End(-4162).Row ' -4162 = xlUp
+    totalRow = lastDataRow + 1
+
+    ' Locate initial positions of MExQty & TotValue by field order
+    meqCol = -1: totValCol = -1
+    For i = 0 To rs.Fields.Count - 1
+        Select Case rs.Fields(i).Name
+            Case "MExQty":   meqCol = i + 1
+            Case "TotValue": totValCol = i + 1
+        End Select
+    Next i
+    If meqCol = -1 Or totValCol = -1 Then
+        MsgBox "Required columns MExQty or TotValue not found.", vbCritical, "Column Error"
+        GoTo Cleanup
+    End If
+
+    ' Move MExQty to end
+    lastCol = xlWsh.Cells(3, xlWsh.Columns.Count).End(-4159).Column ' -4159 = xlToLeft
+    xlWsh.Columns(meqCol).Cut
+    xlWsh.Columns(lastCol + 1).Insert Shift:=1 ' 1 = xlToRight
+    If totValCol > meqCol Then totValCol = totValCol - 1 ' adjust if shifted
+
+    ' Move TotValue to end (after the new last col)
+    lastCol = xlWsh.Cells(3, xlWsh.Columns.Count).End(-4159).Column
+    xlWsh.Columns(totValCol).Cut
+    xlWsh.Columns(lastCol + 1).Insert Shift:=1
+
+    ' After both moves, recompute lastCol and set final positions
+    lastCol = xlWsh.Cells(3, xlWsh.Columns.Count).End(-4159).Column
+    meqFinalCol = lastCol - 1
+    totValFinalCol = lastCol
+
+    ' Report Title merged across A1..lastCol
+    With xlWsh.Range(xlWsh.Cells(1, 1), xlWsh.Cells(1, lastCol))
+        .Merge
+        .Value = "Utilisation Report of '" & siteName & "' for the month of " & monthText & " " & selectedYear
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = -4108 ' xlCenter
+    End With
+
+    ' Format daily quantity columns (cols 4 .. lastCol-2)
+    If lastCol > 3 Then
+        With xlWsh.Range(xlWsh.Cells(4, 4), xlWsh.Cells(lastDataRow, lastCol - 2))
+            .NumberFormat = "#,##0.00"
+        End With
+    End If
+
+    ' Ensure MExQty & TotValue are numeric + formatted
+    With xlWsh.Range(xlWsh.Cells(4, meqFinalCol), xlWsh.Cells(lastDataRow, meqFinalCol))
+        .Value = .Value
+        .NumberFormat = "#,##0.00"
+    End With
+    With xlWsh.Range(xlWsh.Cells(4, totValFinalCol), xlWsh.Cells(lastDataRow, totValFinalCol))
+        .Value = .Value
+        .NumberFormat = "#,##0.00"
+    End With
+
+    ' Grand Total row
+    xlWsh.Cells(totalRow, 1).Value = "Grand Total"
+
+    xlWsh.Cells(totalRow, meqFinalCol).Formula = "=SUM(" & _
+        xlWsh.Cells(4, meqFinalCol).Address(False, False) & ":" & _
+        xlWsh.Cells(lastDataRow, meqFinalCol).Address(False, False) & ")"
+    xlWsh.Cells(totalRow, meqFinalCol).NumberFormat = "#,##0.00"
+
+    xlWsh.Cells(totalRow, totValFinalCol).Formula = "=SUM(" & _
+        xlWsh.Cells(4, totValFinalCol).Address(False, False) & ":" & _
+        xlWsh.Cells(lastDataRow, totValFinalCol).Address(False, False) & ")"
+    xlWsh.Cells(totalRow, totValFinalCol).NumberFormat = "#,##0.00"
+
+    ' Bold + shade entire Grand Total row
+    lastCol = xlWsh.Cells(3, xlWsh.Columns.Count).End(-4159).Column  ' xlToLeft
+
+    ' Bold + shade entire Grand Total row dynamically
+    With xlWsh.Range(xlWsh.Cells(totalRow, 1), xlWsh.Cells(totalRow, lastCol))
+        .Font.Bold = True
+        .Interior.Color = RGB(220, 230, 241)
+    End With
+
+    ' Apply AutoFilter dynamically to header row
+    xlWsh.Range(xlWsh.Cells(3, 1), xlWsh.Cells(3, lastCol)).AutoFilter
+    xlWsh.Rows("4:4").Select
+    xlApp.ActiveWindow.FreezePanes = True
+    xlWsh.Columns.AutoFit
+
+    ' Save (overwrite if exists)
+    If Dir(strFilePath) <> "" Then Kill strFilePath
+    xlWbk.SaveAs strFilePath, FileFormat:=51 ' .xlsx
+
+    MsgBox "Report generated successfully at " & strFilePath, vbInformation, "Success"
+
+Cleanup:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    db.QueryDefs.Delete "TempConsumptionReportQuery"
+    Set rs = Nothing: Set qdf = Nothing: Set db = Nothing
+    Set xlWsh = Nothing: Set xlWbk = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Number & " - " & Err.Description, vbCritical, "Error"
+    Resume Cleanup
+End Sub
+
+

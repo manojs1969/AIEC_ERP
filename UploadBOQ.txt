@@ -1,0 +1,90 @@
+Private Sub btnImport_Click()
+    On Error GoTo ErrorHandler
+
+    Dim dlg As FileDialog
+    Dim filePath As String
+    Dim xlApp As Object
+    Dim xlWorkbook As Object
+    Dim xlWorksheet As Object
+    Dim locationValue As Variant
+    Dim lastRow As Long
+    Dim locationExists As Boolean
+    Dim response As VbMsgBoxResult
+    Dim sqlDelete As String
+
+    ' File picker
+    Set dlg = Application.FileDialog(msoFileDialogFilePicker)
+    If dlg.Show = -1 Then
+        filePath = dlg.SelectedItems(1)
+    Else
+        MsgBox "No file selected.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Open Excel
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWorkbook = xlApp.Workbooks.Open(filePath)
+    Set xlWorksheet = xlWorkbook.Sheets(1)
+
+    ' Detect last row (assumes Location is in column A, i.e., column 1)
+    lastRow = xlWorksheet.Cells(xlWorksheet.Rows.Count, 1).End(xlUp).Row
+
+    ' Read the Location from first data row (row 2)
+    locationValue = xlWorksheet.Cells(2, 1).Value ' <-- adjust if Location is in another column
+
+    If IsNull(locationValue) Or locationValue = "" Then
+        MsgBox "Excel file does not contain a Location value in the expected cell.", vbExclamation
+        GoTo Cleanup
+    End If
+
+    ' Check if data already exists in BOQ table for this location
+    locationExists = Not IsNull(DLookup("Location", "BOQ", "Location=" & locationValue))
+
+    If locationExists Then
+        response = MsgBox("BOQ data already exists for Location " & locationValue & "." & vbCrLf & _
+                          "Do you want to overwrite it?", vbYesNo + vbQuestion, "Overwrite Confirmation")
+        If response = vbYes Then
+            ' Delete existing data for this location
+            sqlDelete = "DELETE FROM BOQ WHERE Location = " & locationValue
+            CurrentDb.Execute sqlDelete, dbFailOnError
+        Else
+            MsgBox "Import cancelled by user.", vbInformation
+            GoTo Cleanup
+        End If
+    End If
+
+    ' Close Excel before import
+    xlWorkbook.Close False
+    xlApp.Quit
+
+    ' Release Excel objects
+    Set xlWorksheet = Nothing
+    Set xlWorkbook = Nothing
+    Set xlApp = Nothing
+
+    ' Import into BOQ
+    DoCmd.TransferSpreadsheet _
+        TransferType:=acImport, _
+        SpreadsheetType:=acSpreadsheetTypeExcel12, _
+        TableName:="BOQ", _
+        FileName:=filePath, _
+        HasFieldNames:=True, _
+        Range:="Sheet1!"
+
+    MsgBox "Data imported successfully!", vbInformation
+    Exit Sub
+
+Cleanup:
+    If Not xlWorkbook Is Nothing Then xlWorkbook.Close False
+    If Not xlApp Is Nothing Then xlApp.Quit
+    Set xlWorksheet = Nothing
+    Set xlWorkbook = Nothing
+    Set xlApp = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+
+

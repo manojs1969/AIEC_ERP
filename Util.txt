@@ -1,0 +1,376 @@
+Public Function FetchItemNames(LocationID As Long) As DAO.Recordset
+    Dim strSQL As String
+    strSQL = "SELECT ItemName FROM Rate WHERE LocationID = " & LocationID & ""
+    
+    Dim rs As DAO.Recordset
+    Set rs = CurrentDb.OpenRecordset(strSQL)
+    
+    If Not rs.EOF Then
+        rs.MoveFirst
+        Do While Not rs.EOF
+            MsgBox "ItemName: " & rs!ItemName
+            rs.MoveNext
+        Loop
+    Else
+        MsgBox "No records found."
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+End Function
+
+Function FormatDateForSQL(dt As Variant) As String
+    If IsNull(dt) Then
+        FormatDateForSQL = "NULL"
+    Else
+        FormatDateForSQL = "#" & Format(dt, "mm/dd/yyyy") & "#"
+    End If
+End Function
+
+
+Private Sub cboLocationID_AfterUpdate()
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+    Dim selectedLocationID As Long
+
+    ' Get the selected LocationID from cboSiteCode
+    selectedLocationID = CLng(Me.cboLocationID.Value)
+
+    ' Construct the SQL query based on the provided LocationID
+    strSQL = "SELECT DISTINCT ItemName FROM Rate WHERE LocationID = " & selectedLocationID & ""
+
+    ' Execute the query
+    Set rs = CurrentDb.OpenRecordset(strSQL)
+
+    ' Populate the combo boxes with item names
+    Me.cboIN0.rowSource = strSQL
+    Me.cboIN1.rowSource = strSQL
+    Me.cboIN2.rowSource = strSQL
+    Me.cboIN3.rowSource = strSQL
+    Me.cboIN4.rowSource = strSQL
+    Me.cboIN5.rowSource = strSQL
+    Me.cboIN6.rowSource = strSQL
+    Me.cboIN7.rowSource = strSQL
+    Me.cboIN8.rowSource = strSQL
+    Me.cboIN9.rowSource = strSQL
+    Me.cboIN10.rowSource = strSQL
+    Me.cboIN11.rowSource = strSQL
+
+    rs.Close
+    Set rs = Nothing
+End Sub
+
+Private Sub PopulateComboBoxWithItemNamesFromQuery(cboIN As ComboBox, LocationID As Long)
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+
+    ' Construct the SQL query based on the provided LocationID
+    strSQL = "SELECT DISTINCT ItemName FROM Rate WHERE LocationID = " & selectedLocationID & ""
+
+    ' Execute the query
+    Set rs = CurrentDb.OpenRecordset(strSQL)
+
+    ' Populate the combo box with item names
+    cbo.rowSource = ""
+    If Not rs.EOF Then
+        rs.MoveFirst
+        Do While Not rs.EOF
+            cbo.AddItem rs!ItemName
+            rs.MoveNext
+        Loop
+    End If
+
+    rs.Close
+    Set rs = Nothing
+End Sub
+
+Private Sub UpdateTextBoxWithUOM(cboIN As ComboBox, txtUOM As TextBox, selectedLocationID As Long)
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+    Dim uomValue As Variant
+    
+    ' Build SQL query to retrieve UOM from the Rate table
+    strSQL = "SELECT UOM FROM Rate WHERE ItemName = '" & cboIN.Value & "' AND (LocationID = " & selectedLocationID & ") ORDER BY IIF(LocationID = " & selectedLocationID & ", 0, 1), ItemName"
+    
+    ' Open recordset based on the SQL query
+    Set rs = CurrentDb.OpenRecordset(strSQL)
+    
+    ' Check if the recordset is not empty
+    If Not rs.EOF Then
+        ' Retrieve the UOM value from the recordset
+        uomValue = rs!UOM
+        
+        ' Check if the value is not null
+        If Not IsNull(uomValue) Then
+            ' Update the text box with the retrieved UOM
+            txtUOM.Value = uomValue
+        Else
+            ' Clear the text box if UOM value is null
+            txtUOM.Value = ""
+        End If
+    Else
+        ' Clear the text box if no corresponding UOM is found
+        txtUOM.Value = ""
+    End If
+    
+    ' Close the recordset
+    rs.Close
+    Set rs = Nothing
+End Sub
+
+Private Sub cboIN_AfterUpdate(cbo As ComboBox, txt As TextBox)
+    Dim selectedLocationID As Long
+
+    If IsNull(Me.cboLocationID.Value) Then
+        MsgBox "Please select Site ID and Date first.", vbExclamation, "Missing Site ID"
+        Me.cboLocationID.SetFocus
+        Exit Sub
+    End If
+
+    selectedLocationID = CLng(Me.cboLocationID.Value)
+    UpdateTextBoxWithUOM cbo, txt, selectedLocationID
+End Sub
+
+Private Sub cboIN0_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN0, Me.txtUOM0
+End Sub
+
+Private Sub cboIN1_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN1, Me.txtUOM1
+End Sub
+
+Private Sub cboIN2_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN2, Me.txtUOM2
+End Sub
+
+Private Sub cboIN3_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN3, Me.txtUOM3
+End Sub
+
+Private Sub cboIN4_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN4, Me.txtUOM4
+End Sub
+
+Private Sub cboIN5_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN5, Me.txtUOM5
+End Sub
+
+Private Sub cboIN6_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN6, Me.txtUOM6
+End Sub
+
+Private Sub cboIN7_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN7, Me.txtUOM7
+End Sub
+
+Private Sub cboIN8_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN8, Me.txtUOM8
+End Sub
+
+Private Sub cboIN9_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN9, Me.txtUOM9
+End Sub
+
+Private Sub cboIN10_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN10, Me.txtUOM10
+End Sub
+
+Private Sub cboIN11_AfterUpdate()
+    cboIN_AfterUpdate Me.cboIN11, Me.txtUOM11
+End Sub
+
+Private Sub btnSave_Click()
+    On Error GoTo ErrorHandler
+
+    Dim strSQL As String
+    Dim db As Database
+    Dim i As Integer
+    Dim recordsSaved As Boolean
+
+    Set db = CurrentDb
+    recordsSaved = False
+
+    ' Check for required fields
+    If IsNull(Me.cboLocationID.Value) Then
+        MsgBox "Please select Site ID and Date first.", vbExclamation, "Missing Site ID"
+        Me.cboLocationID.SetFocus
+        Exit Sub
+    End If
+
+    If IsNull(Me.ExDate.Value) Then
+        MsgBox "Please enter the date.", vbExclamation, "Missing Date"
+        Me.ExDate.SetFocus
+        Exit Sub
+    End If
+
+    
+    ' Format ExDate properly (mm/dd/yyyy)
+    Dim formattedDate As String
+    formattedDate = Format(Me("ExDate").Value, "mm/dd/yyyy")
+    
+    ' Loop through each set of combo box and text box pairs
+    For i = 0 To 11
+        Dim ItemName As Variant
+        Dim UOM As Variant
+        Dim ExQty As Variant
+        
+        ' Extract values from controls
+        ItemName = Me("cboIN" & i).Value
+        UOM = Me("txtUOM" & i).Value
+        ExQty = Me("Qty" & i).Value
+        
+        ' Check if ItemName, UOM, and ExQty are not null
+        If Not IsNull(ItemName) And Not IsNull(UOM) And Not IsNull(ExQty) Then
+            ' Convert ExQty to Double
+            ExQty = CDbl(ExQty)
+            
+            ' Build and execute SQL query to insert data into the table
+            strSQL = "INSERT INTO Util (ExDate, LocationID, ItemName, UOM, ExQty) VALUES (#" & formattedDate & "#, " & Me("cboLocationID").Value & ", '" & ItemName & "', '" & UOM & "', " & ExQty & ")"
+            db.Execute strSQL
+            recordsSaved = True
+        Else
+            Debug.Print "Skipping record due to null value in one of the fields: ItemName, UOM, or ExQty"
+        End If
+    Next i
+    
+    If recordsSaved Then
+        MsgBox "Data saved successfully.", vbInformation, "Success"
+        ClearFields
+    End If
+    
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error: " & Err.Description, vbExclamation, "Error"
+End Sub
+
+Private Sub ClearFields()
+    On Error Resume Next ' Temporarily suppress error handling
+    
+    ' Clear date and location ID
+    If Me.ExDate.ControlType = acTextBox Then
+        Me.ExDate.Value = Null
+    ElseIf Me.ExDate.ControlType = acDatePicker Then
+        Me.ExDate = Null
+    Else
+        Me.ExDate.Value = "" ' Attempt to clear it as a string
+    End If
+    
+    If Not IsNull(Me.cboLocationID) Then
+        Me.cboLocationID.Value = Null
+    End If
+    
+    ' Loop through each set of combo box and text box pairs
+    Dim i As Integer
+    For i = 0 To 11
+        Me("cboIN" & i).rowSource = "" ' Clear row source
+        Me("cboIN" & i).Value = Null ' Clear value
+        Me("txtUOM" & i).Value = Null ' Clear UOM text box
+        Me("Qty" & i).Value = Null ' Clear quantity text box
+    Next i
+    
+    ' Force form repaint
+    Me.Repaint
+    
+    On Error GoTo 0 ' Restore error handling
+End Sub
+
+Private Sub btnUploadUtilDPR_Click()
+    Dim fd As FileDialog
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim LastRow As Long
+    Dim r As Long
+    Dim db As DAO.Database
+    Dim rst As DAO.Recordset
+    Dim sqlCheck As String
+    
+    ' Excel values
+    Dim ExDate As Variant, LocationID As Variant, ItemName As Variant
+    Dim UOM As Variant, ExQty As Variant
+    
+    ' Open file dialog to choose Excel file
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "Select Excel File for Utility Log Upload"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xls; *.xlsx"
+    If fd.Show = False Then
+        MsgBox "No file selected.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Open Excel and get Util sheet
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWB = xlApp.Workbooks.Open(fd.SelectedItems(1))
+    On Error Resume Next
+    Set xlWS = xlWB.Sheets("Util")
+    On Error GoTo 0
+    If xlWS Is Nothing Then
+        MsgBox "Sheet 'Util' not found!", vbCritical
+        GoTo CleanUp
+    End If
+    
+    LastRow = xlWS.Cells(xlWS.Rows.Count, "A").End(-4162).Row ' xlUp = -4162
+    
+    Set db = CurrentDb()
+    
+    For r = 2 To LastRow ' Assuming row 1 is headers
+        ' Read and sanitize values
+        ExDate = xlWS.Cells(r, 1).Value       ' Column A
+        LocationID = xlWS.Cells(r, 2).Value   ' Column B
+        ItemName = Trim(CStr(xlWS.Cells(r, 3).Value)) ' Column C
+        UOM = Trim(CStr(xlWS.Cells(r, 4).Value))      ' Column D
+        ExQty = xlWS.Cells(r, 5).Value        ' Column E
+        
+        ' Validate data types
+        If Not IsDate(ExDate) Then
+            MsgBox "Row " & r & ": Invalid date in 'ExDate'.", vbExclamation
+            GoTo CleanUp
+        End If
+        
+        If Not IsNumeric(LocationID) Or Not IsNumeric(ExQty) Then
+            MsgBox "Row " & r & ": One or more numeric fields (LocationID or ExQty) are invalid.", vbExclamation
+            GoTo CleanUp
+        End If
+        
+        ' Duplicate check - CORRECTED LINE
+        sqlCheck = "SELECT Count(*) FROM [Util] WHERE [ExDate] = #" & Format(ExDate, "mm/dd/yyyy") & "# " & _
+                   "AND [LocationID] = " & LocationID & " " & _
+                   "AND [ItemName] = '" & Replace(ItemName, "'", "''") & "' " & _
+                   "AND [ExQty] = " & ExQty
+        
+        Set rst = db.OpenRecordset(sqlCheck, dbOpenSnapshot)
+        If rst.Fields(0).Value > 0 Then ' Check if count is greater than 0
+            rst.Close
+            Set rst = Nothing
+            ' Skip duplicate and move to the next row
+            GoTo NextRow
+        End If
+        rst.Close
+        Set rst = Nothing
+        
+        ' Insert data using Recordset
+        Set rst = db.OpenRecordset("Util", dbOpenDynaset)
+        rst.AddNew
+        rst!ExDate = ExDate
+        rst!LocationID = LocationID
+        rst!ItemName = ItemName
+        rst!UOM = UOM
+        rst!ExQty = ExQty
+        rst.Update
+        rst.Close
+        Set rst = Nothing
+        
+NextRow:
+    Next r
+    
+    MsgBox "Utility Log Upload Complete!", vbInformation
+    
+CleanUp:
+    On Error Resume Next
+    xlWB.Close False
+    xlApp.Quit
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+End Sub

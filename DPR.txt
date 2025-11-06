@@ -1,0 +1,303 @@
+Private Sub btnUploadDPR_Click()
+    Dim fd As FileDialog
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim LastRow As Long
+    Dim r As Long
+    Dim ExDate As Variant, SiteCode As Variant, ItemCode As Variant, UOM As Variant, Quant As Variant
+    Dim db As DAO.Database
+    Dim rsCheck As DAO.Recordset
+    Dim strCheckSQL As String
+
+    ' Open file dialog to select Excel file
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "Select Excel File for DPR Upload"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xls; *.xlsx"
+    If fd.Show = False Then
+        MsgBox "No file selected.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Open Excel and get the sheet "DPR"
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWB = xlApp.Workbooks.Open(fd.SelectedItems(1))
+    On Error Resume Next
+    Set xlWS = xlWB.Sheets("DPR")
+    On Error GoTo 0
+    If xlWS Is Nothing Then
+        MsgBox "Sheet 'DPR' not found in Excel file!", vbCritical
+        GoTo Cleanup
+    End If
+
+    ' Find last used row in DPR sheet
+    LastRow = xlWS.Cells(xlWS.Rows.Count, "A").End(-4162).Row   ' -4162 = xlUp
+
+    ' Open database for insertion
+    Set db = CurrentDb()
+
+    ' Start reading sheet from row 2 (assuming row 1 has headers)
+    For r = 2 To LastRow
+        ExDate = xlWS.Cells(r, 1).Value       ' Column A
+        SiteCode = xlWS.Cells(r, 2).Value     ' Column B
+        ItemCode = xlWS.Cells(r, 3).Value     ' Column C
+        UOM = xlWS.Cells(r, 5).Value          ' Column E
+        Quant = Trim(CStr(xlWS.Cells(r, 6).Value)) ' Column F
+        Quant = Replace(Quant, Chr(160), "")  ' Remove non-breaking spaces
+
+        ' Validation: Ensure each column is filled
+        If IsNull(ExDate) Or IsNull(SiteCode) Or IsNull(ItemCode) Or IsNull(UOM) Or IsNull(Quant) Or _
+           ExDate = "" Or SiteCode = "" Or ItemCode = "" Or UOM = "" Or Quant = "" Then
+            MsgBox "Row " & r & " has empty fields. Please fill all columns.", vbExclamation
+            GoTo Cleanup
+        End If
+
+        ' Type Validation
+        If Not IsDate(ExDate) Then
+            MsgBox "Row " & r & ": Invalid Date in 'ExDate'.", vbExclamation
+            GoTo Cleanup
+        End If
+        If Not IsNumeric(SiteCode) Then
+            MsgBox "Row " & r & ": Invalid Number in 'SiteCode'.", vbExclamation
+            GoTo Cleanup
+        End If
+        If Not IsNumeric(Quant) Then
+            MsgBox "Row " & r & ": Invalid Number in 'Quant'. Value: '" & Quant & "'", vbExclamation
+            GoTo Cleanup
+        End If
+
+        ' Duplicate check: search for existing records matching ExDate, ItemCode, and Quant
+        strCheckSQL = "SELECT COUNT(*) AS RecCount FROM DPR WHERE ExDate = #" & Format(ExDate, "yyyy-mm-dd") & _
+                      "# AND ItemCode = '" & Replace(ItemCode, "'", "''") & "' AND Quant = " & Quant
+        Set rsCheck = db.OpenRecordset(strCheckSQL, dbOpenSnapshot)
+
+        If Not rsCheck.EOF Then
+            If rsCheck.Fields("RecCount").Value > 0 Then
+                MsgBox "Row " & r & ": Duplicate record found for same Date, ItemCode, and Quantity. Skipping insertion.", vbExclamation
+                rsCheck.Close
+                Set rsCheck = Nothing
+                GoTo NextRow
+            End If
+        End If
+        rsCheck.Close
+        Set rsCheck = Nothing
+
+        ' Insert into DPR table if no duplicates found
+        db.Execute "INSERT INTO DPR (ExDate, SiteCode, ItemCode, UOM, Quant) " & _
+            "VALUES (#" & Format(ExDate, "yyyy-mm-dd") & "#, " & SiteCode & ", '" & Replace(ItemCode, "'", "''") & _
+            "', '" & Replace(UOM, "'", "''") & "', " & Quant & ")"
+
+NextRow:
+    Next r
+
+    MsgBox "DPR Upload Complete!", vbInformation
+
+Cleanup:
+    On Error Resume Next
+    xlWB.Close False
+    xlApp.Quit
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+End Sub
+
+
+Public Function GetBOQItemRowSource(SiteCode As Long) As String
+    GetBOQItemRowSource = _
+        "SELECT ItemCode, BOQItem FROM BOQ WHERE Location = " & SiteCode & " ORDER BY BOQItem"
+End Function
+
+Function FormatDateForSQL(dt As Variant) As String
+    If IsNull(dt) Then
+        FormatDateForSQL = "NULL"
+    Else
+        FormatDateForSQL = "#" & Format(dt, "dd/mm/yyyy") & "#"
+    End If
+End Function
+
+Private Sub PopulateComboBoxWithItemCodesFromQuery(cbo As ComboBox, SiteCode As Long)
+    Dim rs As DAO.Recordset
+    Dim rowSource As String
+    
+    ' Use table query to repopulate the combo box
+    cbo.RowSourceType = "Table/Query"
+    cbo.rowSource = "SELECT ItemCode, BOQItem, UOM FROM BOQ WHERE Location = " & SiteCode
+     
+    ' Optional: Clear previous selection
+    cbo = Null
+End Sub
+
+Private Sub UpdateTextBoxWithUOM(cboItemCode As ComboBox, txtUOM As TextBox)
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+    Dim uomValue As Variant
+    
+    ' Build SQL query to retrieve UOM from the BOQ table
+    strSQL = "SELECT UOM FROM BOQ WHERE ItemCode = '" & cboItemCode.Value & "'"
+    
+    ' Open recordset based on the SQL query
+    Set rs = CurrentDb.OpenRecordset(strSQL)
+    
+    ' Check if the recordset is not empty
+    If Not rs.EOF Then
+        ' Retrieve the UOM value from the recordset
+        uomValue = rs!UOM
+        
+        ' Check if the value is not null
+        If Not IsNull(uomValue) Then
+            ' Update the text box with the retrieved UOM
+            txtUOM.Value = uomValue
+        Else
+            ' Clear the text box if UOM value is null
+            txtUOM.Value = ""
+        End If
+    Else
+        ' Clear the text box if no corresponding UOM is found
+        txtUOM.Value = ""
+    End If
+    
+    ' Close the recordset
+    rs.Close
+    Set rs = Nothing
+End Sub
+
+Private Sub cboSiteCode_AfterUpdate()
+    ' Validation
+    If IsNull(Me.cboSiteCode.Value) Then
+        MsgBox "Please select Site ID.", vbExclamation, "Missing Information"
+        Me.cboSiteCode.SetFocus
+        Exit Sub
+    End If
+
+    If IsNull(Me.ExDate.Value) Then
+        MsgBox "Please select Date.", vbExclamation, "Missing Information"
+        Me.ExDate.SetFocus
+        Exit Sub
+    End If
+
+    ' Populate comboboxes only if Site ID and Date are provided
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode0, Me.cboSiteCode.Value
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode1, Me.cboSiteCode.Value
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode2, Me.cboSiteCode.Value
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode3, Me.cboSiteCode.Value
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode4, Me.cboSiteCode.Value
+    PopulateComboBoxWithItemCodesFromQuery Me.cboItemCode5, Me.cboSiteCode.Value
+End Sub
+
+Private Sub cboItemCode0_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode0, Me.txtUOM0
+End Sub
+
+Private Sub cboItemCode1_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode1, Me.txtUOM1
+End Sub
+
+Private Sub cboItemCode2_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode2, Me.txtUOM2
+End Sub
+
+Private Sub cboItemCode3_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode3, Me.txtUOM3
+End Sub
+
+Private Sub cboItemCode4_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode4, Me.txtUOM4
+End Sub
+Private Sub cboItemCode5_AfterUpdate()
+    UpdateTextBoxWithUOM Me.cboItemCode5, Me.txtUOM5
+End Sub
+
+Private Sub Command83_Click()
+    On Error GoTo ErrorHandler
+    Dim db As DAO.Database
+    Dim recordsSaved As Long
+    Dim skipped     As Long
+    Dim strSQL      As String
+    Dim formattedDate As String
+    Dim i           As Integer
+    Dim ItemCode    As Variant
+    Dim UOM         As Variant
+    Dim QuantRaw    As Variant
+    Dim Quant       As Double
+
+    Set db = CurrentDb
+    recordsSaved = 0
+    skipped = 0
+
+    ' 1. Required Fields
+    If IsNull(Me.ExDate) Or IsNull(Me.cboSiteCode) Then
+        MsgBox "ExDate and SiteCode are required.", vbExclamation
+        Exit Sub
+    End If
+
+    ' 2. Format Date
+    formattedDate = "#" & Format(Me.ExDate, "mm\/dd\/yyyy") & "#"
+
+    ' 3. Loop & INSERT or Skip
+    For i = 0 To 5
+        ItemCode = Me("cboItemCode" & i).Value
+        UOM = Me("txtUOM" & i).Value
+        QuantRaw = Me("txtQuant" & i).Value
+
+        ' Skip if no ItemCode or UOM
+        If IsNull(ItemCode) Or IsNull(UOM) Then
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        ' Skip if blank or non-numeric quantity
+        If Len(Trim(QuantRaw & "")) = 0 Then
+            skipped = skipped + 1
+            GoTo NextRow
+        ElseIf Not IsNumeric(QuantRaw) Then
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        ' Safe to convert & insert
+        Quant = CDbl(QuantRaw)
+        strSQL = "INSERT INTO DPR (ExDate, SiteCode, ItemCode, UOM, Quant) " & _
+                 "VALUES (" & formattedDate & ", " & Me.cboSiteCode & ", '" & _
+                 ItemCode & "', '" & UOM & "', " & Quant & ")"
+        db.Execute strSQL, dbFailOnError
+        recordsSaved = recordsSaved + 1
+
+NextRow:
+        Err.Clear
+    Next i
+
+    ' 4. Summary Message
+    If recordsSaved > 0 Then
+        MsgBox recordsSaved & " saved, " & skipped & " skipped.", vbInformation
+        ClearFields
+    Else
+        MsgBox "No records saved. " & skipped & " skipped.", vbExclamation
+    End If
+
+    Set db = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical
+    If Not db Is Nothing Then Set db = Nothing
+End Sub
+
+Private Sub ClearFields()
+    On Error Resume Next ' Temporarily suppress error handling
+    
+    ' Clear date and site code
+    Me.ExDate.Value = Null
+    Me.cboSiteCode.Value = Null
+    
+    ' Loop through each set of combo box and text box pairs
+    Dim i As Integer
+    For i = 0 To 4
+        Me("cboItemCode" & i).rowSource = "" ' Clear row source
+        Me("cboItemCode" & i).Value = Null ' Clear value
+        Me("txtUOM" & i).Value = Null ' Clear UOM text box
+        Me("txtQuant" & i).Value = Null ' Clear quantity text box
+    Next i
+    
+    On Error GoTo 0 ' Restore error handling
+End Sub
+

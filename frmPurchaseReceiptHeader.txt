@@ -1,0 +1,465 @@
+Private Sub Form_AfterUpdate()
+    On Error Resume Next
+    Me.frmPurchaseReceiptDetails.Form.Requery
+End Sub
+
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim rsPODetail As DAO.Recordset
+    Dim strSQL As String
+    Dim strPODetailSQL As String
+    Dim newGRNID As Long
+    Dim POID As Long
+    Dim isNew As Boolean
+    Dim msg As String
+    Dim PODetailID As Long
+    Dim TotalReceived As Double
+    Dim response As Integer
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    '  VALIDATION
+    '====================================================
+    If IsNull(Me.cboPOID) Or Nz(Me.cboPOID, 0) = 0 Then
+        MsgBox "Please select a Purchase Order.", vbExclamation, "Validation Error"
+        Me.cboPOID.SetFocus
+        Exit Sub
+    End If
+    
+    If IsNull(Me.txtGRNDate) Then
+        MsgBox "Please enter GRN Date.", vbExclamation, "Validation Error"
+        Me.txtGRNDate.SetFocus
+        Exit Sub
+    End If
+    
+    If IsNull(Me.cboVendorID) Or Nz(Me.cboVendorID, 0) = 0 Then
+        MsgBox "Please select Vendor.", vbExclamation, "Validation Error"
+        Me.cboVendorID.SetFocus
+        Exit Sub
+    End If
+    
+    POID = Nz(Me.cboPOID, 0)
+    isNew = (Nz(Me.txtGRNID, 0) = 0)
+    
+    Debug.Print "=== GRN SAVE STARTED ==="
+    Debug.Print "isNew = " & isNew
+    Debug.Print "txtGRNID = " & Nz(Me.txtGRNID, 0)
+    
+    '====================================================
+    '  SAVE OR UPDATE GRN HEADER
+    '====================================================
+    If isNew Then
+        Debug.Print "Creating NEW GRN..."
+        Set rs = db.OpenRecordset("tblPurchaseReceiptHeader", dbOpenDynaset)
+        rs.AddNew
+        
+        rs!GRNCode = "GRN-" & Format(Now(), "yymmdd-hhnnss")
+        rs!GRNDate = CDate(Me.txtGRNDate)
+        rs!POID = POID
+        rs!VendorID = CLng(Me.cboVendorID)
+        
+        If Not IsNull(Me.cboStoreID) And Nz(Me.cboStoreID, 0) <> 0 Then
+            rs!StoreID = CLng(Me.cboStoreID)
+        End If
+        
+        If Not IsNull(Me.txtInvoiceNo) And Trim(Me.txtInvoiceNo & "") <> "" Then
+            rs!InvoiceNo = CStr(Me.txtInvoiceNo)
+        End If
+        
+        If Not IsNull(Me.txtInvoiceDate) Then
+            rs!InvoiceDate = CDate(Me.txtInvoiceDate)
+        End If
+        
+        If Not IsNull(Me.txtReceivedBy) And Trim(Me.txtReceivedBy & "") <> "" Then
+            rs!ReceivedBy = CStr(Me.txtReceivedBy)
+        Else
+            rs!ReceivedBy = Environ("Username")
+        End If
+        
+        If Not IsNull(Me.txtRemarks) And Trim(Me.txtRemarks & "") <> "" Then
+            rs!Remarks = CStr(Me.txtRemarks)
+        End If
+        
+        rs!CreatedDate = Now()
+        rs!CreatedBy = Environ("Username")
+        rs.Update
+        
+        rs.Bookmark = rs.LastModified
+        newGRNID = rs!GRNID
+        Me.txtGRNID = newGRNID
+        Me.txtGRNCode = rs!GRNCode
+        Debug.Print "New GRNID created: " & newGRNID
+        
+        rs.Close
+        
+    Else
+        Debug.Print "Updating EXISTING GRN..."
+        newGRNID = Nz(Me.txtGRNID, 0)
+        
+        Set rs = db.OpenRecordset("SELECT * FROM tblPurchaseReceiptHeader WHERE GRNID=" & newGRNID, dbOpenDynaset)
+        
+        If Not rs.EOF Then
+            rs.Edit
+            rs!GRNDate = CDate(Me.txtGRNDate)
+            rs!VendorID = CLng(Me.cboVendorID)
+            
+            If Not IsNull(Me.cboStoreID) And Nz(Me.cboStoreID, 0) <> 0 Then
+                rs!StoreID = CLng(Me.cboStoreID)
+            Else
+                rs!StoreID = Null
+            End If
+            
+            If Not IsNull(Me.txtInvoiceNo) And Trim(Me.txtInvoiceNo & "") <> "" Then
+                rs!InvoiceNo = CStr(Me.txtInvoiceNo)
+            Else
+                rs!InvoiceNo = Null
+            End If
+            
+            If Not IsNull(Me.txtInvoiceDate) Then
+                rs!InvoiceDate = CDate(Me.txtInvoiceDate)
+            Else
+                rs!InvoiceDate = Null
+            End If
+            
+            If Not IsNull(Me.txtReceivedBy) And Trim(Me.txtReceivedBy & "") <> "" Then
+                rs!ReceivedBy = CStr(Me.txtReceivedBy)
+            Else
+                rs!ReceivedBy = Null
+            End If
+            
+            If Not IsNull(Me.txtRemarks) And Trim(Me.txtRemarks & "") <> "" Then
+                rs!Remarks = CStr(Me.txtRemarks)
+            Else
+                rs!Remarks = Null
+            End If
+            
+            rs.Update
+        End If
+        
+        rs.Close
+    End If
+    
+    Set rs = Nothing
+    
+    '====================================================
+    '  UPDATE PO RECEIVED QTY (CUMULATIVE)
+    '====================================================
+    strPODetailSQL = "SELECT DISTINCT PODetailID FROM tblPurchaseReceiptDetails WHERE GRNID=" & newGRNID
+    Set rsPODetail = db.OpenRecordset(strPODetailSQL, dbOpenDynaset)
+    
+    Do While Not rsPODetail.EOF
+        PODetailID = Nz(rsPODetail!PODetailID, 0)
+        
+        If PODetailID > 0 Then
+            TotalReceived = Nz(DSum("ReceivedQty", "tblPurchaseReceiptDetails", "PODetailID=" & PODetailID), 0)
+            
+            strSQL = "UPDATE tblPurchaseOrderDetails SET " & _
+                     "ReceivedQty = " & TotalReceived & ", " & _
+                     "BalanceQty = QuantityOrdered - " & TotalReceived & " " & _
+                     "WHERE PODetailID = " & PODetailID & ";"
+            
+            db.Execute strSQL, dbFailOnError
+        End If
+        
+        rsPODetail.MoveNext
+    Loop
+    
+    rsPODetail.Close
+    Set rsPODetail = Nothing
+
+    '====================================================
+    '  SUCCESS MESSAGE
+    '====================================================
+    If isNew Then
+        msg = "Goods Receipt Note " & Me.txtGRNCode & " created successfully!"
+    Else
+        msg = "Goods Receipt Note " & Me.txtGRNCode & " updated successfully!"
+    End If
+    
+    MsgBox msg, vbInformation, "Success"
+    
+    '====================================================
+    '  ASK IF USER WANTS TO ADD ITEM-WISE DETAILS
+    '====================================================
+    response = MsgBox("Do you want to add item-wise entry to GRN Details?", _
+                      vbYesNo + vbQuestion, "Add Items")
+    
+    If response = vbYes Then
+        DoCmd.OpenForm "frmPurchaseReceiptDetails", , , "GRNID=" & Me.txtGRNID, , acDialog
+        Me.Requery
+    Else
+        Me.Requery
+    End If
+
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    If Not rsPODetail Is Nothing Then rsPODetail.Close
+    Set rs = Nothing
+    Set rsPODetail = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error saving GRN: " & Err.Description, vbCritical, "Error"
+    Debug.Print "ERROR: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+
+Private Sub LoadOutstandingItems(GRNID As Long, POID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim rsDetails As DAO.Recordset
+    Dim strSQL As String
+    
+    Set db = CurrentDb
+    
+    ' Get outstanding PO line items
+    strSQL = "SELECT PODetailID, ItemID, QuantityOrdered, ReceivedQty, BalanceQty " & _
+             "FROM tblPurchaseOrderDetails " & _
+             "WHERE POID=" & POID & " AND Nz(BalanceQty,0) > 0 " & _
+             "ORDER BY PODetailID;"
+    
+    Set rs = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If Not rs.EOF Then
+        Set rsDetails = db.OpenRecordset("tblPurchaseReceiptDetails", dbOpenDynaset)
+        
+        Do While Not rs.EOF
+            rsDetails.AddNew
+            rsDetails!GRNID = GRNID
+            rsDetails!PODetailID = rs!PODetailID
+            rsDetails!ItemID = rs!ItemID
+            rsDetails!ReceivedQty = 0
+            rsDetails!BalanceQty = Nz(rs!BalanceQty, 0)
+            rsDetails.Update
+            rs.MoveNext
+        Loop
+        
+        rsDetails.Close
+        Me.frmPurchaseReceiptDetails.Form.Requery
+    End If
+
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    If Not rsDetails Is Nothing Then rsDetails.Close
+    Set rs = Nothing
+    Set rsDetails = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error auto-loading items: " & Err.Description, vbCritical
+    Resume ExitHandler
+End Sub
+Private Sub txtGRNID_AfterUpdate()
+    Call LoadGRNData(Nz(Me.txtGRNID, 0))
+End Sub
+
+Private Sub LoadGRNData(GRNID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    
+    If GRNID = 0 Then
+        MsgBox "Please enter a valid GRNID.", vbExclamation, "Invalid GRNID"
+        Exit Sub
+    End If
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    '  LOAD GRN HEADER DATA
+    '====================================================
+    strSQL = "SELECT * FROM tblPurchaseReceiptHeader WHERE GRNID=" & GRNID
+    Set rs = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If rs.EOF Then
+        MsgBox "No GRN found with GRNID: " & GRNID, vbExclamation, "Not Found"
+        
+        ' Clear form fields
+        Me.txtGRNCode = Null
+        Me.txtGRNDate = Date
+        Me.cboPOID = Null
+        Me.cboVendorID = Null
+        Me.cboStoreID = Null
+        Me.txtInvoiceNo = Null
+        Me.txtInvoiceDate = Null
+        Me.txtReceivedBy = Null
+        Me.txtRemarks = Null
+        
+        ' Unlock Vendor for new entry
+        Me.cboVendorID.Locked = False
+        
+        ' Clear subform
+        Me.frmPurchaseReceiptDetails.Form.RecordSource = _
+            "SELECT * FROM tblPurchaseReceiptDetails WHERE GRNID=0;"
+        Me.frmPurchaseReceiptDetails.Form.Requery
+        
+        rs.Close
+        Exit Sub
+    End If
+    
+    '====================================================
+    '  POPULATE HEADER FIELDS
+    '====================================================
+    Me.txtGRNCode = Nz(rs!GRNCode, "")
+    Me.txtGRNDate = Nz(rs!GRNDate, Date)
+    Me.cboPOID = Nz(rs!POID, Null)
+    Me.cboVendorID = Nz(rs!VendorID, Null)
+    Me.cboStoreID = Nz(rs!StoreID, Null)
+    Me.txtInvoiceNo = Nz(rs!InvoiceNo, "")
+    Me.txtInvoiceDate = Nz(rs!InvoiceDate, Null)
+    Me.txtReceivedBy = Nz(rs!ReceivedBy, "")
+    Me.txtRemarks = Nz(rs!Remarks, "")
+    
+    rs.Close
+    
+    '====================================================
+    '  LOAD GRN DETAILS INTO SUBFORM
+    '====================================================
+    Me.frmPurchaseReceiptDetails.Form.RecordSource = _
+        "SELECT * FROM tblPurchaseReceiptDetails WHERE GRNID=" & GRNID & ";"
+    Me.frmPurchaseReceiptDetails.Form.Requery
+    
+    '====================================================
+    '  LOCK VENDOR FOR EXISTING GRN (PREVENT EDIT)
+    '====================================================
+    Me.cboVendorID.Locked = True
+    Me.cboVendorID.Enabled = True
+    
+    '====================================================
+    '  UPDATE BUTTON CAPTION
+    '====================================================
+    Me.btnSave.Caption = "Update GRN"
+    
+    MsgBox "GRN #" & Me.txtGRNCode & " loaded successfully!", vbInformation, "GRN Loaded"
+
+ExitHandler:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading GRN data: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub btnNewGRN_Click()
+    On Error GoTo ErrHandler
+    
+    '====================================================
+    '  CLEAR ALL CONTROLS (FOR UNBOUND FORMS)
+    '====================================================
+    Me.txtGRNID = Null
+    Me.txtGRNCode = Null
+    Me.txtGRNDate = ""
+    Me.cboPOID = Null
+    Me.cboVendorID = Null
+    Me.cboStoreID = Null
+    Me.txtInvoiceNo = Null
+    Me.txtInvoiceDate = ""
+    Me.txtReceivedBy = Environ("Username")
+    Me.txtRemarks = Null
+    
+    ' Unlock Vendor
+    Me.cboVendorID.Locked = False
+    
+    '====================================================
+    '  CLEAR SUBFORM
+    '====================================================
+    On Error Resume Next
+    If Not IsNull(Me.Controls("frmPurchaseReceiptDetails")) Then
+        Me.frmPurchaseReceiptDetails.Form.RecordSource = _
+            "SELECT * FROM tblPurchaseReceiptDetails WHERE GRNID=0;"
+        Me.frmPurchaseReceiptDetails.Form.Requery
+    End If
+    On Error GoTo ErrHandler
+    
+    '====================================================
+    '  UPDATE BUTTON AND SET FOCUS
+    '====================================================
+    Me.btnSave.Caption = "Save GRN"
+    Me.txtGRNDate.SetFocus
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error clearing form: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub cboPOID_AfterUpdate()
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    Dim POID As Long
+    
+    POID = Nz(Me.cboPOID, 0)
+    
+    If POID = 0 Then
+        ' Clear fields if PO deselected
+        Me.cboVendorID.Locked = False
+        Me.cboVendorID = Null
+        Me.cboStoreID = Null
+        'Me.txtPOInfo = ""  ' Optional: Clear PO info display
+        Exit Sub
+    End If
+    
+    Set db = CurrentDb
+    
+    '====================================================
+    '  GET VENDOR AND OTHER INFO FROM PO HEADER
+    '====================================================
+    strSQL = "SELECT VendorID, StoreID, PONum, PODate, POStatus FROM tblPurchaseOrderHeader WHERE POID=" & POID
+    Set rs = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If Not rs.EOF Then
+        ' Auto-populate Vendor (mandatory)
+        Me.cboVendorID = Nz(rs!VendorID, Null)
+        
+        ' Auto-populate Store (if available)
+        If Not IsNull(rs!StoreID) Then
+            Me.cboStoreID = rs!StoreID
+        End If
+        
+        ' Lock Vendor field
+        Me.cboVendorID.Locked = True
+        Me.cboVendorID.Enabled = True
+        
+        ' Optional: Display PO info in a text box for reference
+        'If Not IsNull(Me.Controls("txtPOInfo")) Then
+        '    Me.txtPOInfo = "PO# " & rs!PONum & " | Date: " & Format(rs!PODate, "dd-mmm-yyyy") & " | Status: " & Nz(rs!POStatus, "")
+        'End If
+        
+    Else
+        MsgBox "Purchase Order details not found.", vbExclamation, "Error"
+    End If
+    
+    rs.Close
+
+ExitHandler:
+    On Error Resume Next
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading PO details: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub

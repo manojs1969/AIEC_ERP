@@ -1,0 +1,152 @@
+Private Sub btnViewReport_Click()
+    Call GeneratePivotalMISReport
+End Sub
+
+Public Sub GeneratePivotalMISReport()
+    Dim xlApp As Object
+    Dim xlWbk As Object
+    Dim xlWsh As Object
+    Dim qdf As DAO.QueryDef
+    Dim rst As DAO.Recordset
+    Dim db As DAO.Database
+    Dim strQuerySQL As String
+    Dim strFilePath As String
+    Dim i As Long
+
+    Dim reportLocation As Variant
+    ' Modified to use separate variables for month and year
+    Dim selectedMonth As Integer
+    Dim selectedYear As Integer
+    
+    Dim reportDate As Date
+    Dim SiteName As String
+    Dim formattedMonth As String
+
+    Dim daysInMonth As Integer
+    Dim pivotHeaderList As String
+    Dim headerCol As Long
+
+    On Error GoTo ErrorHandler
+
+    ' Updated validation to check both month and year combo boxes
+    If IsNull(Me.CboLocation) Or IsNull(Me.cboSelectMonth) Or IsNull(Me.cboSelectYear) Then
+        MsgBox "Please select a Site, a Month, and a Year.", vbExclamation, "Missing Parameters"
+        Exit Sub
+    End If
+
+    reportLocation = Me.CboLocation.Value
+    ' Get month and year values from the separate combo boxes
+    selectedMonth = Me.cboSelectMonth.Value
+    selectedYear = Me.cboSelectYear.Value
+    
+    ' Construct the reportDate using the selected month and year
+    reportDate = DateSerial(selectedYear, selectedMonth, 1)
+
+    SiteName = DLookup("SiteName", "Location", "LocationID = " & reportLocation)
+    formattedMonth = Format(reportDate, "MMMM yyyy")
+    strFilePath = CurrentProject.Path & "\Monthly_Pivotal_MIS_" & Format(reportDate, "yyyy_mm") & ".xlsx"
+    daysInMonth = Day(DateSerial(Year(reportDate), Month(reportDate) + 1, 0))
+
+    For i = 1 To daysInMonth
+        If Len(pivotHeaderList) > 0 Then pivotHeaderList = pivotHeaderList & ", "
+        pivotHeaderList = pivotHeaderList & i
+    Next i
+
+    ' Updated SQL query to filter by separate month and year values
+    strQuerySQL = "TRANSFORM Sum([DPR].[Quant]) AS DailyQuantity " & _
+                  "SELECT BOQ.ItemCode, CStr(BOQ.BOQItem) AS BOQItem, DPR.UOM, BOQ.BOQQty, BOQ.BOQRate " & _
+                  "FROM BOQ INNER JOIN DPR ON (BOQ.[Location] = DPR.[SiteCode]) AND (BOQ.ItemCode = DPR.ItemCode) " & _
+                  "WHERE DPR.SiteCode = " & reportLocation & " AND Month(DPR.ExDate) = " & selectedMonth & " AND Year(DPR.ExDate) = " & selectedYear & " " & _
+                  "GROUP BY BOQ.ItemCode, CStr(BOQ.BOQItem), DPR.UOM, BOQ.BOQQty, BOQ.BOQRate " & _
+                  "PIVOT DatePart('d', [DPR].[ExDate]) IN (" & pivotHeaderList & ");"
+
+    Set db = CurrentDb
+    Set qdf = db.CreateQueryDef("", strQuerySQL)
+    Set rst = qdf.OpenRecordset
+
+    If rst.EOF And rst.BOF Then
+        MsgBox "No data found for the selected month.", vbInformation, "No Data"
+        GoTo Cleanup
+    End If
+
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    Set xlWbk = xlApp.Workbooks.Add
+    Set xlWsh = xlWbk.Sheets(1)
+
+    xlWsh.Cells(2, 1).Value = "Monthly View of Daily DPR Report for " & SiteName & " - " & formattedMonth
+    xlWsh.Range("A2:E2").Merge
+    xlWsh.Range("A2").Font.Bold = True
+
+    headerCol = 1
+    For i = 0 To rst.Fields.Count - 1
+        xlWsh.Cells(3, headerCol).Value = rst.Fields(i).Name
+        headerCol = headerCol + 1
+	xlWsh.Cells(3, headerCol).Font.Bold = True
+    Next i
+
+    xlWsh.Cells(4, 1).CopyFromRecordset rst
+
+    Dim totalCol As Long
+    Dim totalValueCol As Long
+
+    totalCol = rst.Fields.Count + 1
+    xlWsh.Cells(3, totalCol).Value = "Total for Month"
+    xlWsh.Cells(3, totalCol).Font.Bold = True
+
+    totalValueCol = totalCol + 1
+    xlWsh.Cells(3, totalValueCol).Value = "Total Value of Work for Month"
+    xlWsh.Cells(3, totalValueCol).Font.Bold = True
+
+    Dim lastDataRow As Long
+    lastDataRow = xlWsh.Cells(xlWsh.Rows.Count, "A").End(-4162).Row
+    
+    Dim boqRateCol As Long
+    boqRateCol = 5
+
+    For i = 4 To lastDataRow
+        xlWsh.Cells(i, totalCol).Formula = "=SUM(F" & i & ":" & xlWsh.Cells(i, totalCol - 1).Address(False, False) & ")"
+        xlWsh.Cells(i, totalCol).NumberFormat = "#,##0.00"
+
+        xlWsh.Cells(i, totalValueCol).Formula = "=" & xlWsh.Cells(i, totalCol).Address(False, False) & "*" & xlWsh.Cells(i, boqRateCol).Address(False, False)
+        xlWsh.Cells(i, totalValueCol).NumberFormat = "#,##0.00"
+    Next i
+
+    Dim totalRow As Long
+    totalRow = lastDataRow + 1
+    xlWsh.Cells(totalRow, "A").Value = "Grand Total"
+    xlWsh.Cells(totalRow, "A").Font.Bold = True
+    
+    ' The grand total for this column is not required, so the line is removed.
+
+    ' Grand total for "Total Value of Work for Month" remains
+    xlWsh.Cells(totalRow, totalValueCol).Formula = "=SUM(" & xlWsh.Cells(4, totalValueCol).Address(False, False) & ":" & xlWsh.Cells(lastDataRow, totalValueCol).Address(False, False) & ")"
+    xlWsh.Cells(totalRow, totalValueCol).NumberFormat = "#,##0.00"
+
+    With xlWsh.Range(xlWsh.Cells(4, 6), xlWsh.Cells(lastDataRow, totalCol))
+        .NumberFormat = "#,##0.00"
+    End With
+
+    xlWsh.Columns.AutoFit
+
+    xlWbk.SaveAs strFilePath
+    xlWbk.Close False
+    xlApp.Quit
+
+    MsgBox "Report generated successfully at " & strFilePath, vbInformation, "Success"
+
+Cleanup:
+    If Not rst Is Nothing Then rst.Close
+    Set rst = Nothing
+    Set qdf = Nothing
+    Set db = Nothing
+    Set xlWsh = Nothing
+    Set xlWbk = Nothing
+    Set xlApp = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical, "Error"
+    Resume Cleanup
+End Sub
+

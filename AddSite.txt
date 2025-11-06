@@ -1,0 +1,103 @@
+
+Private Sub LoadLocationCombo()
+    Me.cmbLocationID.rowSource = "SELECT LocationID, SiteName, WorkDescription FROM Location ORDER BY LocationID"
+    Me.cmbLocationID.Requery
+End Sub
+Private Sub ClearFields()
+    Me.txtSiteName = ""
+    Me.txtWorkDescription = ""
+    Me.txtAddress1 = ""
+    Me.txtAddress2 = ""
+    Me.txtDist = ""
+    Me.txtState = ""
+    Me.txtPIN = ""
+
+    ' Optional: reset focus to first editable field
+    Me.txtSiteName.SetFocus
+End Sub
+
+' === cmbLocationID_AfterUpdate ===
+Private Sub cmbLocationID_AfterUpdate()
+    Dim rs As DAO.Recordset
+    Dim sql As String
+
+    If IsNull(Me.cmbLocationID) Then Exit Sub
+
+    sql = "SELECT * FROM Location WHERE LocationID = " & Me.cmbLocationID
+    Set rs = CurrentDb.OpenRecordset(sql)
+
+    If Not rs.EOF Then
+        Me.txtSiteName = rs!SiteName
+        Me.txtWorkDescription = rs!WorkDescription
+        Me.txtAddress1 = rs!Address1
+        Me.txtAddress2 = rs!Address2
+        Me.txtDist = rs!Dist
+        Me.txtState = rs!State
+        Me.txtPIN = rs!PIN
+    Else
+        MsgBox "No record found for this Location ID.", vbExclamation
+    End If
+
+    rs.Close
+    Set rs = Nothing
+End Sub
+
+Private Sub btnSave_Click()
+    If IsNull(Me.txtSiteName) Or Trim(Me.txtSiteName) = "" Then
+        MsgBox "Site Name is required.", vbExclamation
+        Me.txtSiteName.SetFocus
+        Exit Sub
+    End If
+
+    ' If cmbLocationID has a value, update existing record
+    If Not IsNull(Me.cmbLocationID) Then
+        Dim sqlUpdate As String
+        sqlUpdate = "UPDATE Location SET " & _
+            "SiteName = '" & Replace(Nz(Me.txtSiteName, ""), "'", "''") & "', " & _
+            "WorkDescription = '" & Replace(Nz(Me.txtWorkDescription, ""), "'", "''") & "', " & _
+            "Address1 = '" & Replace(Nz(Me.txtAddress1, ""), "'", "''") & "', " & _
+            "Address2 = '" & Replace(Nz(Me.txtAddress2, ""), "'", "''") & "', " & _
+            "Dist = '" & Replace(Nz(Me.txtDist, ""), "'", "''") & "', " & _
+            "State = '" & Replace(Nz(Me.txtState, ""), "'", "''") & "', " & _
+            "PIN = '" & Replace(Nz(Me.txtPIN, ""), "'", "''") & "' " & _
+            "WHERE LocationID = " & Nz(Me.cmbLocationID, 0)
+
+
+        CurrentDb.Execute sqlUpdate, dbFailOnError
+        MsgBox "Record updated successfully.", vbInformation
+    Else
+        ' Insert new record
+        Dim sqlInsert As String
+        sqlInsert = "INSERT INTO Location (SiteName, WorkDescription, Address1, Address2, Dist, State, PIN) VALUES (" & _
+            "'" & Replace(Me.txtSiteName, "'", "''") & "', " & _
+            "'" & Replace(Me.txtWorkDescription, "'", "''") & "', " & _
+            "'" & Replace(Me.txtAddress1, "'", "''") & "', " & _
+            "'" & Replace(Me.txtAddress2, "'", "''") & "', " & _
+            "'" & Replace(Me.txtDist, "'", "''") & "', " & _
+            "'" & Replace(Me.txtState, "'", "''") & "', " & _
+            "'" & Replace(Me.txtPIN, "'", "''") & "')"
+
+        CurrentDb.Execute sqlInsert, dbFailOnError
+        MsgBox "New record saved successfully.", vbInformation
+        
+            Call ClearFields
+            Call LoadLocationCombo
+    End If
+
+    LoadLocationCombo
+    ClearFields
+End Sub
+
+' === btnAddNew_Click ===
+Private Sub btnAddNew_Click()
+    Call ClearFields
+    Me.cmbLocationID = Null
+End Sub
+
+Private Sub Form_Load()
+    ' Populate cmbLocationID with available IDs
+    LoadLocationCombo
+
+End Sub
+
+

@@ -1,0 +1,241 @@
+Option Compare Database
+Option Explicit
+
+' ====== Save Button ======
+Public Sub btnSave_Click()
+    On Error GoTo ErrHandler
+
+    Dim isNew As Boolean
+    Dim newPOID As Long
+    Dim PONum As String
+    Dim response As Integer
+
+    ' Validation checks
+    If IsNull(Me.cboVendorID) Or Me.cboVendorID = "" Then
+        MsgBox "Please select a Vendor.", vbExclamation, "Validation"
+        Me.cboVendorID.SetFocus
+        Exit Sub
+    End If
+
+    If IsNull(Me.cboStoreID) Or Me.cboStoreID = "" Then
+        MsgBox "Please select a Store.", vbExclamation, "Validation"
+        Me.cboStoreID.SetFocus
+        Exit Sub
+    End If
+
+    If IsNull(Me.txtPODate) Then
+        MsgBox "Please enter a valid PO Date.", vbExclamation, "Validation"
+        Me.txtPODate.SetFocus
+        Exit Sub
+    End If
+
+    isNew = (Nz(Me.txtPOID, 0) = 0)
+
+    ' Generate PO Number for new records
+    If isNew Then
+        PONum = GeneratePONumber()
+    Else
+        PONum = Me.txtPONum
+    End If
+
+    ' Save the PO Header
+    newPOID = SaveHeaderUsingRecordset(isNew, PONum)
+
+    If newPOID = 0 Then
+        MsgBox "Failed to save Purchase Order header.", vbCritical, "Save Error"
+        Exit Sub
+    End If
+
+    ' Refresh form to show saved data and navigate to saved record
+    Me.Requery
+    Me.Recordset.FindFirst "POID = " & newPOID
+    If Not Me.Recordset.EOF Then
+        Me.Bookmark = Me.Recordset.Bookmark
+    End If
+
+    MsgBox "Purchase Order " & PONum & " saved successfully!", vbInformation, "Success"
+
+    ' Ask if user wants to add items now
+    response = MsgBox("Do you want to add items to PO " & PONum & " now?", vbYesNo + vbQuestion, "Add Items")
+
+    If response = vbYes Then
+        ' Open PurchaseOrderDetails standalone, filtered to new POID
+        DoCmd.OpenForm "frmPurchaseOrderDetails", , , "POID=" & newPOID, , acDialog
+        MsgBox "Returned from item entry.", vbInformation
+    Else
+        MsgBox "You can add items later by opening Purchase Order Details.", vbInformation, "Items"
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    If Me.Dirty Then Me.Undo
+    MsgBox "Error: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+' ====== Save Header Routine ======
+Private Function SaveHeaderUsingRecordset(isNew As Boolean, PONum As String) As Long
+    On Error GoTo ErrorHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim newID As Long
+
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("tblPurchaseOrderHeader", dbOpenDynaset)
+
+    If isNew Then
+        rs.AddNew
+        ' Set required fields
+        rs!PONum = PONum
+        rs!PODate = Nz(Me.txtPODate.value, Date)
+        rs!VendorID = Me.cboVendorID.value
+        rs!StoreID = Me.cboStoreID.value
+        rs!POStatus = Me.txtPOStatus
+        rs!CreatedDate = Date
+        rs!CreatedBy = CurrentUser()
+    Else
+        ' Update existing record
+        rs.FindFirst "POID = " & Me.txtPOID.value
+        If Not rs.EOF Then
+            rs.Edit
+            rs!PODate = Nz(Me.txtPODate.value, rs!PODate)
+            rs!VendorID = Me.cboVendorID.value
+            rs!StoreID = Me.cboStoreID.value
+            rs!ModifiedDate = Date
+            rs!ModifiedBy = CurrentUser()
+        Else
+            SaveHeaderUsingRecordset = 0
+            Exit Function
+        End If
+    End If
+
+    ' Optional fields
+    On Error Resume Next
+    If Not IsNull(Me.txtReferenceNo) Then rs!ReferenceNo = Me.txtReferenceNo.value
+    If Not IsNull(Me.txtPaymentTerms) Then rs!PaymentTerms = Me.txtPaymentTerms.value
+    If Not IsNull(Me.txtDeliveryPeriod) Then rs!DeliveryPeriod = Me.txtDeliveryPeriod.value
+    If Not IsNull(Me.txtDeliveryAt) Then rs!DeliveryAddress = Me.txtDeliveryAt.value
+    If Not IsNull(Me.txtRemarks) Then rs!Remarks = Me.txtRemarks.value
+    On Error GoTo ErrorHandler
+
+    rs.Update
+
+    ' Get the new ID
+    If isNew Then
+        rs.Bookmark = rs.LastModified
+        newID = rs!POID
+    Else
+        newID = Me.txtPOID.value
+    End If
+
+    rs.Close
+    SaveHeaderUsingRecordset = newID
+    Exit Function
+
+ErrorHandler:
+    SaveHeaderUsingRecordset = 0
+    If Not rs Is Nothing Then
+        If rs.EditMode <> dbEditNone Then rs.CancelUpdate
+        rs.Close
+    End If
+End Function
+
+' ====== Purchase Order Number Generator ======
+Private Function GeneratePONumber() As String
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim prefix As String
+    Dim nextNum As Long
+    Dim maxPONum As String
+
+    prefix = "PO" & Year(Date)
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT MAX(PONum) AS MaxPO FROM tblPurchaseOrderHeader WHERE PONum LIKE '" & prefix & "*'")
+
+    If Not rs.EOF And Not IsNull(rs!MaxPO) Then
+        maxPONum = rs!MaxPO
+        If InStr(maxPONum, "-") > 0 Then
+            nextNum = CLng(Mid(maxPONum, InStr(maxPONum, "-") + 1)) + 1
+        Else
+            nextNum = CLng(Right(maxPONum, 3)) + 1
+        End If
+    Else
+        nextNum = 1
+    End If
+
+    GeneratePONumber = prefix & "-" & Format(nextNum, "000")
+
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+End Function
+
+Private Sub ClearAll_Click()
+    Call ClearPurchaseOrderForm
+End Sub
+
+' ====== LOAD EXISTING PO ON POID CHANGE ======
+Private Sub txtPOID_AfterUpdate()
+    Call LoadPurchaseOrder(Nz(Me.txtPOID, 0))
+End Sub
+
+' ====== LOAD EXISTING PURCHASE ORDER ======
+Private Sub LoadPurchaseOrder(lngPOID As Long)
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim SQL As String
+
+    If Nz(lngPOID, 0) = 0 Then Exit Sub
+
+    Set db = CurrentDb
+    SQL = "SELECT * FROM tblPurchaseOrderHeader WHERE POID = " & lngPOID
+    Set rs = db.OpenRecordset(SQL, dbOpenDynaset)
+
+    If Not (rs.EOF And rs.BOF) Then
+        Me.txtPOID = rs!POID
+        Me.txtPONum = Nz(rs!PONum, "")
+        Me.txtPODate = Nz(rs!PODate, Date)
+        Me.cboVendorID = Nz(rs!VendorID, "")
+        Me.cboStoreID = Nz(rs!StoreID, "")
+        Me.txtReferenceNo = Nz(rs!ReferenceNo, "")
+        Me.txtPaymentTerms = Nz(rs!PaymentTerms, "")
+        Me.txtDeliveryPeriod = Nz(rs!DeliveryPeriod, "")
+        Me.txtDeliveryAt = Nz(rs!DeliveryAddress, "")
+        Me.txtRemarks = Nz(rs!Remarks, "")
+        Me.txtPOStatus = Nz(rs!POStatus, "")
+        MsgBox "Purchase Order data loaded successfully!", vbInformation, "Loaded"
+    Else
+        MsgBox "No Purchase Order found for POID " & lngPOID & ".", vbExclamation, "Not Found"
+    End If
+
+ExitHandler:
+    On Error Resume Next
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading Purchase Order: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+' ====== CLEAR FORM (OPTIONAL RESET BUTTON) ======
+Private Sub ClearPurchaseOrderForm()
+    Me.txtPOID = Null
+    Me.txtPONum = Null
+    Me.txtPODate = Null
+    Me.cboVendorID = Null
+    Me.cboStoreID = Null
+    Me.txtReferenceNo = Null
+    Me.txtPaymentTerms = Null
+    Me.txtDeliveryPeriod = Null
+    Me.txtDeliveryAt = Null
+    Me.txtRemarks = Null
+    Me.txtPOStatus = Null
+End Sub

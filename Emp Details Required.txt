@@ -1,0 +1,59 @@
+E00001	Abinash Biswal
+E00002	Asisha Kumar Samal
+E00003	Bandan Barik
+E00004	Bapi Das (Vhcl.No-9518)
+E00005	Bhabani Parichha
+E00006	Bhabatosh Pati
+E00007	Bikaksh Nayak (Vech. 7323)
+E00008	Bikash Samal
+E00009	Biswajit Rout
+E00010	Chandan Patra (Vechile-9111)
+E00011	Chandan Pradhan (Vech-1516)
+E00012	Debasish Nayak
+E00013	Debasish Pattanaik
+E00014	Dipak Pradhan
+E00015	Dusasana Das
+E00017	Hardibandhu Jena
+E00018	Himanshu Sekhar Das Chagulu (4807)
+E00019	Jagabandhu Jena 
+E00020	Jatindra Nath Mahanta
+E00021	Jaynabi Mandol
+E00022	Jitendra Samal
+E00023	Kamal Sahoo
+E00024	Kanhu Charan Behera
+E00025	Karishma Samal
+E00029	Mantu Mondal
+E00030	Nilesh Behera
+E00032	Nirod Kumar Nayak
+E00033	Pankaj Paswan
+E00034	Papu Parida (Vech.0775)
+E00035	Partha Sarathi Das
+E00036	Pitabas Patra
+E00037	Pradip Behera
+E00038	Pradipta Kumar Barada
+E00039	Pramod Kumar Padihary
+E00040	Prasant Biswal
+E00041	Prasanta Samal
+E00042	Rabindra Kumar Nayak
+E00043	Rabindra Raul
+E00045	Rajkishore Nayak
+E00046	Rakesh Mallick - Birupa
+E00047	Rakesh Mallick - Mallia
+E00048	Ramesh Rout
+E00049	Rashmirekha Thatoi
+E00050	Rasmiranjan Nayak
+E00051	Sagar Parida
+E00053	Sangram Purtti
+E00054	Santosh Kumar Kanungo
+E00055	Santosh Pradhan
+E00056	Saroj Kumar Bal
+E00057	Saroj Mallik (Vech-3918)
+E00060	Shrikant Rout
+E00061	Sipun Mohanty
+E00063	Subash Swain
+E00064	Sudhir Thatoi
+E00065	Sudipta Kumar Samal
+E00066	Susanta Sahani
+E00068	Tapan Sahoo
+E00069	Trilochan Rout
+E00070	Upendra Pani

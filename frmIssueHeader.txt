@@ -1,0 +1,227 @@
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim newIssueID As Long
+    Dim isNew As Boolean
+    Dim msg As String
+    Dim response As Integer
+
+    Set db = CurrentDb
+
+    '====================================================
+    ' VALIDATION
+    '====================================================
+    If IsNull(Me.cboStoreID) Or Nz(Me.cboStoreID, 0) = 0 Then
+        MsgBox "Please select a Store.", vbExclamation, "Validation Error"
+        Me.cboStoreID.SetFocus
+        Exit Sub
+    End If
+
+    If IsNull(Me.txtIssueDate) Then
+        MsgBox "Please enter Issue Date.", vbExclamation, "Validation Error"
+        Me.txtIssueDate.SetFocus
+        Exit Sub
+    End If
+
+    If Trim(Nz(Me.txtIssuedTo, "")) = "" Then
+        MsgBox "Please enter Issued To.", vbExclamation, "Validation Error"
+        Me.txtIssuedTo.SetFocus
+        Exit Sub
+    End If
+
+    isNew = (Nz(Me.txtIssueID, 0) = 0)
+
+    '====================================================
+    ' SAVE OR UPDATE ISSUE HEADER USING RECORDSET
+    '====================================================
+    If isNew Then
+        Set rs = db.OpenRecordset("tblIssueHeader", dbOpenDynaset)
+        rs.AddNew
+        
+        rs!IssueCode = "ISS-" & Format(Now(), "yymmdd-hhnnss")
+        rs!IssueDate = CDate(Me.txtIssueDate)
+        rs!StoreID = CLng(Me.cboStoreID)
+        rs!IssuedTo = CStr(Me.txtIssuedTo)
+        rs!Remarks = Nz(Me.txtRemarks, "")
+        rs!CreatedDate = Now()
+        rs!CreatedBy = Environ("Username")
+        rs.Update
+        
+        rs.Bookmark = rs.LastModified
+        newIssueID = rs!IssueID
+        Me.txtIssueID = newIssueID
+        Me.txtIssueCode = rs!IssueCode
+        rs.Close
+        
+    Else
+        newIssueID = Nz(Me.txtIssueID, 0)
+        Set rs = db.OpenRecordset("SELECT * FROM tblIssueHeader WHERE IssueID=" & newIssueID, dbOpenDynaset)
+        
+        If Not rs.EOF Then
+            rs.Edit
+            rs!IssueDate = CDate(Me.txtIssueDate)
+            rs!StoreID = CLng(Me.cboStoreID)
+            rs!IssuedTo = CStr(Me.txtIssuedTo)
+            rs!Remarks = Nz(Me.txtRemarks, "")
+            rs.Update
+        End If
+        rs.Close
+    End If
+
+    '====================================================
+    ' SUCCESS MESSAGE
+    '====================================================
+    If isNew Then
+        msg = "Issue Note " & Me.txtIssueCode & " created successfully!"
+    Else
+        msg = "Issue Note " & Me.txtIssueCode & " updated successfully!"
+    End If
+    
+    MsgBox msg, vbInformation, "Success"
+
+    '====================================================
+    ' OFFER TO ADD DETAILS
+    '====================================================
+    response = MsgBox("Do you want to add item-wise Issue Details?", vbYesNo + vbQuestion, "Add Items")
+    
+    If response = vbYes Then
+        DoCmd.OpenForm "frmIssueDetails", , , , , acDialog, Me.txtIssueID
+        Me.Requery
+    Else
+        Me.Requery
+    End If
+
+CleanExit:
+    On Error Resume Next
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error saving Issue Note: " & Err.Description, vbCritical, "Error"
+    Resume CleanExit
+End Sub
+
+Private Sub Form_Load()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim IssueID As Long
+
+    Set db = CurrentDb
+
+    '====================================================
+    ' Identify IssueID from OpenArgs or existing control
+    '====================================================
+    If Not IsNull(Me.OpenArgs) And Me.OpenArgs <> "" Then
+        IssueID = CLng(Me.OpenArgs)
+    ElseIf Not IsNull(Me.txtIssueID.value) And Me.txtIssueID.value <> 0 Then
+        IssueID = Me.txtIssueID.value
+    Else
+        IssueID = 0
+    End If
+
+    '====================================================
+    ' Load existing Issue (if any)
+    '====================================================
+    If IssueID > 0 Then
+        Set rs = db.OpenRecordset("SELECT * FROM tblIssueHeader WHERE IssueID=" & IssueID, dbOpenDynaset)
+
+        If Not (rs.EOF Or rs.BOF) Then
+            With Me
+                .txtIssueID = Nz(rs!IssueID, 0)
+                .txtIssueCode = Nz(rs!IssueCode, "")
+                .txtIssueDate = Nz(rs!IssueDate, Date)
+                .cboStoreID = Nz(rs!StoreID, 0)
+                .txtIssuedTo = Nz(rs!IssuedTo, "")
+                .txtRemarks = Nz(rs!Remarks, "")
+                .btnSave.Caption = "Update Issue"
+            End With
+
+        Else
+            MsgBox "No matching issue found for this ID.", vbExclamation, "Not Found"
+            Call ClearIssueControls
+            Me.btnSave.Caption = "Save Issue"
+        End If
+
+        rs.Close
+    Else
+        '====================================================
+        ' New Issue Entry
+        '====================================================
+        Call ClearIssueControls
+        Me.txtIssueDate = Date
+        Me.btnSave.Caption = "Save Issue"
+    End If
+
+CleanExit:
+    On Error Resume Next
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading Issue Header: " & Err.Description, vbCritical, "Error"
+    Resume CleanExit
+End Sub
+Private Sub txtIssueID_AfterUpdate()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim IssueID As Long
+
+    IssueID = Nz(Me.txtIssueID, 0)
+    If IssueID = 0 Then Exit Sub
+
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM tblIssueHeader WHERE IssueID=" & IssueID, dbOpenDynaset)
+
+    If Not (rs.EOF Or rs.BOF) Then
+        With Me
+            .txtIssueCode = Nz(rs!IssueCode, "")
+            .txtIssueDate = Nz(rs!IssueDate, Date)
+            .cboStoreID = Nz(rs!StoreID, 0)
+            .txtIssuedTo = Nz(rs!IssuedTo, "")
+            .txtRemarks = Nz(rs!Remarks, "")
+            .btnSave.Caption = "Update Issue"
+        End With
+
+    Else
+        MsgBox "No matching Issue found for this ID.", vbExclamation, "Not Found"
+        Call ClearIssueControls
+        Me.btnSave.Caption = "Save Issue"
+    End If
+
+    rs.Close
+
+CleanExit:
+    On Error Resume Next
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading Issue details: " & Err.Description, vbCritical, "Error"
+    Resume CleanExit
+End Sub
+
+Private Sub btnNewIssue_Click()
+    Call ClearIssueControls
+    
+    Me.txtIssueDate.SetFocus
+End Sub
+
+Private Sub ClearIssueControls()
+    On Error Resume Next
+    
+    Me.txtIssueID = Null
+    Me.txtIssueCode = Null
+    Me.txtIssueDate = ""
+    Me.cboStoreID = Null
+    Me.txtIssuedTo = Null
+    Me.txtRemarks = Null
+End Sub

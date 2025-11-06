@@ -1,0 +1,521 @@
+Private Sub Form_Load()
+    On Error GoTo Err_Handler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+
+    ' SQL to fetch vendor names
+    strSQL = "SELECT VendorN FROM Vendor ORDER BY VendorN"
+
+    ' Set combo box row source
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset(strSQL, dbOpenSnapshot)
+
+    If Not rs.EOF Then
+        Me.cboVendor.RowSourceType = "Table/Query"
+        Me.cboVendor.rowSource = strSQL
+    Else
+        Me.cboVendor.rowSource = ""
+    End If
+
+Cleanup:
+    If Not rs Is Nothing Then rs.Close
+    Set rs = Nothing: Set db = Nothing
+    Exit Sub
+
+Err_Handler:
+    MsgBox "Error loading vendor list: " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+
+Private Sub btnRptView_Click()
+	On Error GoTo ErrHandler
+
+	Dim xlApp As Object
+	Dim xlWB As Object
+	Dim xlWS As Object
+	Dim rs As DAO.Recordset
+	Dim qd As DAO.QueryDef
+	Dim strSQL As String
+	Dim i As Integer
+	Dim reportTitle As String
+	Dim dateRange As String
+	Dim db As DAO.Database
+	Dim lastCol As Integer
+	Dim dStart As Date, dEnd As Date
+	Dim rateCol As Integer
+	Dim valueCol As Integer
+	Dim lastRow As Long
+
+	Const xlCenter As Long = -4108
+	Const xlUp As Long = -4162
+
+	' Validate inputs
+	If IsNull(Me.cboVendor) Or IsNull(Me.txtDate0) Or IsNull(Me.txtDate1) Then
+		MsgBox "Please select a vendor and enter both start and end dates.", vbExclamation
+		Exit Sub
+	End If
+
+	' Force date values
+	dStart = CDate(Me.txtDate0)
+	dEnd = CDate(Me.txtDate1)
+	If dStart > dEnd Then
+		MsgBox "Start date must be earlier than or equal to end date.", vbExclamation
+		Exit Sub
+	End If
+
+	' Build parameterized SQL query with Rate and Value
+	strSQL = _
+		"PARAMETERS pVendor Text (255), pStart DateTime, pEnd DateTime; " & _
+		"SELECT DISTINCT MR.[R_Date], MR.[Location], MR.[ChallanNo], MR.[VehicleNo], " & _
+		"       MR.[Material], MR.[Unit], MR.[Quantity], " & _
+		"       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) AS [Rate], " & _
+		"       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) * MR.[Quantity] AS [Value] " & _
+		"FROM [MaterialR] AS MR " & _
+		"LEFT JOIN ( " & _
+		"    SELECT MT1.[Vendor], MT1.[Material], MT1.[UOM], MT1.[Mat_Rate], MT1.[Effect_Date] " & _
+		"    FROM [MatRate] AS MT1 " & _
+		"    WHERE MT1.[Effect_Date] = ( " & _
+		"        SELECT MAX(MT2.[Effect_Date]) " & _
+		"        FROM [MatRate] AS MT2 " & _
+		"        WHERE MT2.[Vendor] = MT1.[Vendor] " & _
+		"          AND MT2.[Material] = MT1.[Material] " & _
+		"          AND MT2.[UOM] = MT1.[UOM] " & _
+		"          AND MT2.[Effect_Date] <= [pEnd] " & _
+		"    ) " & _
+		") AS MT " & _
+		"ON MR.[Supplier] = MT.[Vendor] " & _
+		"AND MR.[Material] = MT.[Material] " & _
+		"AND MR.[Unit] = MT.[UOM] " & _
+		"WHERE MR.[R_Date] >= [pStart] " & _
+		"AND MR.[R_Date] <= [pEnd] " & _
+		"AND MR.[Supplier] = [pVendor] " & _
+		"ORDER BY MR.[R_Date]"
+
+	' Get data (parameterized to avoid injection/locale issues)
+	Set db = CurrentDb
+	Set qd = db.CreateQueryDef("")
+	qd.SQL = strSQL
+	qd.Parameters("pVendor").Value = Me.cboVendor
+	qd.Parameters("pStart").Value = dStart
+	qd.Parameters("pEnd").Value = dEnd
+	Set rs = qd.OpenRecordset(dbOpenSnapshot)
+
+	If rs.EOF Then
+		MsgBox "No records found for the selected criteria.", vbInformation
+		GoTo Cleanup
+	End If
+
+	' Create Excel instance
+	Set xlApp = CreateObject("Excel.Application")
+	xlApp.Visible = True
+	On Error Resume Next
+	xlApp.ScreenUpdating = False
+	On Error GoTo ErrHandler
+	Set xlWB = xlApp.Workbooks.Add
+	Set xlWS = xlWB.Sheets(1)
+
+	lastCol = rs.Fields.Count
+
+	' Titles
+	reportTitle = "Material Receipt Report of " & Me.cboVendor
+	dateRange = "From " & Format(dStart, "dd-mmm-yyyy") & " to " & Format(dEnd, "dd-mmm-yyyy")
+
+	With xlWS
+		' Report title
+		.Range(.Cells(1, 1), .Cells(1, lastCol)).Merge
+		.Cells(1, 1).Value = reportTitle
+		.Cells(1, 1).Font.Bold = True
+		.Cells(1, 1).Font.Size = 14
+		.Cells(1, 1).HorizontalAlignment = xlCenter
+
+		' Date range
+		.Range(.Cells(2, 1), .Cells(2, lastCol)).Merge
+		.Cells(2, 1).Value = dateRange
+		.Cells(2, 1).Font.Italic = True
+		.Cells(2, 1).HorizontalAlignment = xlCenter
+	End With
+
+	' Column headers row 4
+	For i = 0 To rs.Fields.Count - 1
+		xlWS.Cells(4, i + 1).Value = rs.Fields(i).Name
+		xlWS.Cells(4, i + 1).Font.Bold = True
+	Next i
+
+	' Light grey fill for headers
+	With xlWS.Range(xlWS.Cells(4, 1), xlWS.Cells(4, lastCol))
+		.Interior.Color = RGB(217, 217, 217)
+		.Font.Bold = True
+	End With
+
+	' Data row 5
+	xlWS.Range("A5").CopyFromRecordset rs
+
+	' Find Rate & Value columns
+	rateCol = 0: valueCol = 0
+	For i = 0 To rs.Fields.Count - 1
+		If LCase$(rs.Fields(i).Name) = "rate" Then rateCol = i + 1
+		If LCase$(rs.Fields(i).Name) = "value" Then valueCol = i + 1
+	Next i
+
+	' Last row with data
+	lastRow = xlWS.Cells(xlWS.Rows.Count, 1).End(xlUp).Row
+
+	' Currency formatting for Rate and Value columns
+	If rateCol > 0 Then xlWS.Range(xlWS.Cells(5, rateCol), xlWS.Cells(lastRow, rateCol)).Style = "Currency"
+	If valueCol > 0 Then xlWS.Range(xlWS.Cells(5, valueCol), xlWS.Cells(lastRow, valueCol)).Style = "Currency"
+
+	' Freeze panes below headers
+	With xlWS
+		.Range("A5").Select
+		.ActiveWindow.FreezePanes = True
+	End With
+
+	' Autofit
+	xlWS.Columns.AutoFit
+
+Cleanup:
+	On Error Resume Next
+	If Not rs Is Nothing Then rs.Close
+	Set rs = Nothing
+	Set qd = Nothing
+	Set db = Nothing
+	If Not xlApp Is Nothing Then xlApp.ScreenUpdating = True
+
+	' Clear form inputs after exporting
+	Me.cboVendor = Null
+	Me.txtDate0 = Null
+	Me.txtDate1 = Null
+
+	' Set focus back to cboVendor
+	Me.cboVendor.SetFocus
+
+	Exit Sub
+
+ErrHandler:
+	MsgBox "Error: " & Err.Description, vbCritical
+	Resume Cleanup
+End Sub
+
+Private Sub btViewRpt_Click()
+    On Error GoTo ErrHandler
+
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim rs As DAO.Recordset
+    Dim qd As DAO.QueryDef
+    Dim strSQL As String
+    Dim i As Integer
+    Dim reportTitle As String
+    Dim dateRange As String
+    Dim db As DAO.Database
+    Dim lastCol As Integer
+    Dim dStart As Date, dEnd As Date
+    Dim rateCol As Integer
+    Dim valueCol As Integer
+    Dim lastRow As Long
+
+    Const xlCenter As Long = -4108
+    Const xlUp As Long = -4162
+
+    ' Validate inputs
+    If IsNull(Me.cbSite) Or IsNull(Me.txtDT0) Or IsNull(Me.txtDT1) Then
+        MsgBox "Please select a site and enter both start and end dates.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Dates
+    dStart = CDate(Me.txtDT0)
+    dEnd = CDate(Me.txtDT1)
+    If dStart > dEnd Then
+        MsgBox "Start date must be earlier than or equal to end date.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Parameterized SQL: join MaterialR with MatRate; filter by Location
+strSQL = _
+    "PARAMETERS pSite Text (255), pStart DateTime, pEnd DateTime; " & _
+    "SELECT MR.[R_Date], MR.[Supplier], MR.[ChallanNo], MR.[VehicleNo], " & _
+    "       MR.[Material], MR.[Unit], MR.[Quantity], " & _
+    "       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) AS [Rate], " & _
+    "       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) * MR.[Quantity] AS [Value] " & _
+    "FROM [MaterialR] AS MR " & _
+    "LEFT JOIN ( " & _
+    "    SELECT MT1.[Vendor], MT1.[Material], MT1.[UOM], MT1.[Mat_Rate], MT1.[Effect_Date] " & _
+    "    FROM [MatRate] AS MT1 " & _
+    "    WHERE MT1.[Effect_Date] = ( " & _
+    "        SELECT MAX(MT2.[Effect_Date]) " & _
+    "        FROM [MatRate] AS MT2 " & _
+    "        WHERE MT2.[Vendor] = MT1.[Vendor] " & _
+    "          AND MT2.[Material] = MT1.[Material] " & _
+    "          AND MT2.[UOM] = MT1.[UOM] " & _
+    "          AND MT2.[Effect_Date] <= [pEnd] " & _
+    "    ) " & _
+    ") AS MT " & _
+    "ON MR.[Supplier] = MT.[Vendor] " & _
+    "AND MR.[Material] = MT.[Material] " & _
+    "AND MR.[Unit] = MT.[UOM] " & _
+    "WHERE MR.[R_Date] >= [pStart] " & _
+    "AND MR.[R_Date] <= [pEnd] " & _
+    "AND MR.[Location] = [pSite] " & _
+    "ORDER BY MR.[R_Date];"
+
+    ' Get data via parameters
+    Set db = CurrentDb
+    Set qd = db.CreateQueryDef("")
+    qd.SQL = strSQL
+    qd.Parameters("pSite").Value = Me.cbSite
+    qd.Parameters("pStart").Value = dStart
+    qd.Parameters("pEnd").Value = dEnd
+    Set rs = qd.OpenRecordset(dbOpenSnapshot)
+
+    If rs.EOF Then
+        MsgBox "No records found for the selected criteria.", vbInformation
+        GoTo Cleanup
+    End If
+
+    ' Create Excel
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    On Error Resume Next
+    xlApp.ScreenUpdating = False
+    On Error GoTo ErrHandler
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlWS = xlWB.Sheets(1)
+
+    lastCol = rs.Fields.Count
+
+    ' Titles
+    reportTitle = "Material Receipt Report for Site: " & Me.cbSite
+    dateRange = "From " & Format(dStart, "dd-mmm-yyyy") & " to " & Format(dEnd, "dd-mmm-yyyy")
+
+    With xlWS
+        .Range(.Cells(1, 1), .Cells(1, lastCol)).Merge
+        .Cells(1, 1).Value = reportTitle
+        .Cells(1, 1).Font.Bold = True
+        .Cells(1, 1).Font.Size = 14
+        .Cells(1, 1).HorizontalAlignment = xlCenter
+
+        .Range(.Cells(2, 1), .Cells(2, lastCol)).Merge
+        .Cells(2, 1).Value = dateRange
+        .Cells(2, 1).Font.Italic = True
+        .Cells(2, 1).HorizontalAlignment = xlCenter
+    End With
+
+    ' Headers row 4
+    For i = 0 To rs.Fields.Count - 1
+        xlWS.Cells(4, i + 1).Value = rs.Fields(i).Name
+        xlWS.Cells(4, i + 1).Font.Bold = True
+    Next i
+
+    ' Light grey fill for headers
+    With xlWS.Range(xlWS.Cells(4, 1), xlWS.Cells(4, lastCol))
+        .Interior.Color = RGB(217, 217, 217)
+        .Font.Bold = True
+    End With
+
+    ' Data from row 5
+    xlWS.Range("A5").CopyFromRecordset rs
+
+    ' Find Rate & Value columns
+    rateCol = 0: valueCol = 0
+    For i = 0 To rs.Fields.Count - 1
+        If LCase$(rs.Fields(i).Name) = "rate" Then rateCol = i + 1
+        If LCase$(rs.Fields(i).Name) = "value" Then valueCol = i + 1
+    Next i
+
+    ' Last row
+    lastRow = xlWS.Cells(xlWS.Rows.Count, 1).End(xlUp).Row
+
+    ' Currency formatting (regional)
+    If rateCol > 0 Then xlWS.Range(xlWS.Cells(5, rateCol), xlWS.Cells(lastRow, rateCol)).Style = "Currency"
+    If valueCol > 0 Then xlWS.Range(xlWS.Cells(5, valueCol), xlWS.Cells(lastRow, valueCol)).Style = "Currency"
+
+    ' Freeze panes below headers
+    With xlWS
+        .Range("A5").Select
+        .ActiveWindow.FreezePanes = True
+    End With
+
+    ' Autofit
+    xlWS.Columns.AutoFit
+
+Cleanup:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    Set rs = Nothing
+    Set qd = Nothing
+    Set db = Nothing
+    If Not xlApp Is Nothing Then xlApp.ScreenUpdating = True
+
+    ' Reset form inputs
+    Me.cbSite = Null
+    Me.txtDT0 = Null
+    Me.txtDT1 = Null
+    Me.cbSite.SetFocus
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+
+Private Sub btnView_Rpt_Click()
+    On Error GoTo ErrHandler
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim rs As DAO.Recordset
+    Dim qd As DAO.QueryDef
+    Dim strSQL As String
+    Dim i As Integer
+    Dim reportTitle As String
+    Dim dateRange As String
+    Dim db As DAO.Database
+    Dim lastCol As Integer
+    Dim dStart As Date, dEnd As Date
+    Dim rateCol As Integer
+    Dim valueCol As Integer
+    Dim lastRow As Long
+
+    Const xlCenter As Long = -4108
+    Const xlUp As Long = -4162
+
+    ' Validate inputs - only dates now
+    If IsNull(Me.txtF_Date) Or IsNull(Me.txtT_Date) Then
+        MsgBox "Please enter both start and end dates.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Dates
+    dStart = CDate(Me.txtF_Date)
+    dEnd = CDate(Me.txtT_Date)
+    If dStart > dEnd Then
+        MsgBox "Start date must be earlier than or equal to end date.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Parameterized SQL: date range only
+strSQL = _
+    "PARAMETERS pStart DateTime, pEnd DateTime; " & _
+    "SELECT DISTINCT MR.[R_Date], MR.[Supplier], MR.[Location], MR.[ChallanNo], MR.[VehicleNo], " & _
+    "       MR.[Material], MR.[Unit], MR.[Quantity], " & _
+    "       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) AS [Rate], " & _
+    "       IIf(IsNull(MT.[Mat_Rate]),0,MT.[Mat_Rate]) * MR.[Quantity] AS [Value] " & _
+    "FROM [MaterialR] AS MR " & _
+    "LEFT JOIN ( " & _
+    "    SELECT MT1.[Vendor], MT1.[Material], MT1.[UOM], MT1.[Mat_Rate], MT1.[Effect_Date] " & _
+    "    FROM [MatRate] AS MT1 " & _
+    "    WHERE MT1.[Effect_Date] = ( " & _
+    "        SELECT MAX(MT2.[Effect_Date]) " & _
+    "        FROM [MatRate] AS MT2 " & _
+    "        WHERE MT2.[Vendor] = MT1.[Vendor] " & _
+    "          AND MT2.[Material] = MT1.[Material] " & _
+    "          AND MT2.[UOM] = MT1.[UOM] " & _
+    "          AND MT2.[Effect_Date] <= [pEnd] " & _
+    "    ) " & _
+    ") AS MT " & _
+    "ON MR.[Supplier] = MT.[Vendor] " & _
+    "AND MR.[Material] = MT.[Material] " & _
+    "AND MR.[Unit] = MT.[UOM] " & _
+    "WHERE MR.[R_Date] >= [pStart] " & _
+    "AND MR.[R_Date] <= [pEnd] " & _
+    "ORDER BY MR.[R_Date];"
+
+    ' Get data
+    Set db = CurrentDb
+    Set qd = db.CreateQueryDef("")
+    qd.SQL = strSQL
+    qd.Parameters("pStart").Value = dStart
+    qd.Parameters("pEnd").Value = dEnd
+    Set rs = qd.OpenRecordset(dbOpenSnapshot)
+    If rs.EOF Then
+        MsgBox "No records found for the selected date range.", vbInformation
+        GoTo Cleanup
+    End If
+
+    ' Create Excel
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    On Error Resume Next
+    xlApp.ScreenUpdating = False
+    On Error GoTo ErrHandler
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlWS = xlWB.Sheets(1)
+    lastCol = rs.Fields.Count
+
+    ' Titles
+    reportTitle = "Material Receipt Report"
+    dateRange = "From " & Format(dStart, "dd-mmm-yyyy") & " to " & Format(dEnd, "dd-mmm-yyyy")
+    With xlWS
+        .Range(.Cells(1, 1), .Cells(1, lastCol)).Merge
+        .Cells(1, 1).Value = reportTitle
+        .Cells(1, 1).Font.Bold = True
+        .Cells(1, 1).Font.Size = 14
+        .Cells(1, 1).HorizontalAlignment = xlCenter
+        .Range(.Cells(2, 1), .Cells(2, lastCol)).Merge
+        .Cells(2, 1).Value = dateRange
+        .Cells(2, 1).Font.Italic = True
+        .Cells(2, 1).HorizontalAlignment = xlCenter
+    End With
+
+    ' Headers row 4
+    For i = 0 To rs.Fields.Count - 1
+        xlWS.Cells(4, i + 1).Value = rs.Fields(i).Name
+        xlWS.Cells(4, i + 1).Font.Bold = True
+    Next i
+
+    ' Light grey fill for headers
+    With xlWS.Range(xlWS.Cells(4, 1), xlWS.Cells(4, lastCol))
+        .Interior.Color = RGB(217, 217, 217)
+        .Font.Bold = True
+    End With
+
+    ' Data from row 5
+    xlWS.Range("A5").CopyFromRecordset rs
+
+    ' Find Rate & Value columns
+    rateCol = 0: valueCol = 0
+    For i = 0 To rs.Fields.Count - 1
+        If LCase$(rs.Fields(i).Name) = "rate" Then rateCol = i + 1
+        If LCase$(rs.Fields(i).Name) = "value" Then valueCol = i + 1
+    Next i
+
+    ' Last row
+    lastRow = xlWS.Cells(xlWS.Rows.Count, 1).End(xlUp).Row
+
+    ' Currency formatting (regional)
+    If rateCol > 0 Then xlWS.Range(xlWS.Cells(5, rateCol), xlWS.Cells(lastRow, rateCol)).Style = "Currency"
+    If valueCol > 0 Then xlWS.Range(xlWS.Cells(5, valueCol), xlWS.Cells(lastRow, valueCol)).Style = "Currency"
+
+    ' Freeze panes below headers
+    With xlWS
+        .Range("A5").Select
+        .ActiveWindow.FreezePanes = True
+    End With
+
+    ' Autofit
+    xlWS.Columns.AutoFit
+
+Cleanup:
+    On Error Resume Next
+    If Not rs Is Nothing Then rs.Close
+    Set rs = Nothing
+    Set qd = Nothing
+    Set db = Nothing
+    If Not xlApp Is Nothing Then xlApp.ScreenUpdating = True
+
+    ' Reset form inputs
+    Me.txtF_Date = Null
+    Me.txtT_Date = Null
+    Me.txtF_Date.SetFocus
+
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+

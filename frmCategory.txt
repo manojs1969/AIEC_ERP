@@ -1,0 +1,146 @@
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    Dim newCode As String
+    Dim NewNum As Long
+    Dim strDuplicate As String
+    
+    '--- Basic Validation ---
+    If Trim(Me.txtCategoryName & "") = "" Then
+        MsgBox "Please enter a category name.", vbExclamation, "Validation"
+        Me.txtCategoryName.SetFocus
+        Exit Sub
+    End If
+    
+    Set db = CurrentDb
+    
+    '--- Duplicate Check by CategoryName ---
+    strDuplicate = "SELECT CategoryID, CategoryCode FROM tblCategory " & _
+                   "WHERE UCase(CategoryName) = '" & Replace(UCase(Me.txtCategoryName), "'", "''") & "'"
+    
+    If Nz(Me.txtCategoryID, 0) > 0 Then
+        strDuplicate = strDuplicate & " AND CategoryID <> " & Me.txtCategoryID
+    End If
+    
+    Set rs = db.OpenRecordset(strDuplicate)
+    If Not rs.EOF Then
+        MsgBox "This Category Name already exists with Code: " & rs!CategoryCode, vbExclamation, "Duplicate Found"
+        rs.Close: Set rs = Nothing: Set db = Nothing
+        Exit Sub
+    End If
+    rs.Close
+    
+    '--- Generate Category Code if new ---
+    If Nz(Me.txtCategoryID, 0) = 0 Then
+        Set rs = db.OpenRecordset("SELECT Max(Val(Mid([CategoryCode],4))) AS MaxNum FROM tblCategory")
+        If Not IsNull(rs!MaxNum) Then
+            NewNum = rs!MaxNum + 1
+        Else
+            NewNum = 1
+        End If
+        newCode = "CAT" & Format(NewNum, "0000")
+        Me.txtCategoryCode = UCase(newCode)
+        rs.Close
+    End If
+    
+    '--- Save Record ---
+    Set rs = db.OpenRecordset("tblCategory", dbOpenDynaset)
+    
+    If Nz(Me.txtCategoryID, 0) = 0 Then
+        rs.AddNew
+        rs!CreatedDate = Now()
+        rs!CreatedBy = Environ("Username")
+    Else
+        rs.FindFirst "CategoryID = " & Me.txtCategoryID
+        If rs.NoMatch Then
+            MsgBox "Record not found for update.", vbCritical, "Error"
+            rs.Close: Set rs = Nothing: Set db = Nothing
+            Exit Sub
+        End If
+        rs.Edit
+    End If
+    
+    '--- Apply Casing ---
+    rs!CategoryCode = UCase(Nz(Me.txtCategoryCode, ""))
+    rs!CategoryName = StrConv(Nz(Me.txtCategoryName, ""), vbProperCase)
+    rs!Description = StrConv(Nz(Me.txtDescription, ""), vbProperCase)
+    
+    rs!ModifiedDate = Now()
+    rs!ModifiedBy = Environ("Username")
+    
+    rs.Update
+    
+    MsgBox "Category details saved successfully!", vbInformation, "Success"
+    
+    '--- Clear Form for New Entry ---
+    Call ClearCategoryForm
+    
+    '--- Reset Focus ---
+    Me.txtCategoryName.SetFocus
+
+ExitHere:
+    On Error Resume Next
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical, "Save Error"
+    Resume ExitHere
+End Sub
+Private Sub ClearCategoryForm()
+    Me.txtCategoryID = Null
+    Me.txtCategoryCode = Null
+    Me.txtCategoryName = Null
+    Me.txtDescription = Null
+End Sub
+Private Sub LoadCategoryData()
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim lngID As Long
+
+    If Nz(Me.txtCategoryID, 0) = 0 Then
+        Call ClearCategoryForm
+        Me.btnSave.Caption = "Save Category"
+        Exit Sub
+    End If
+
+    lngID = Me.txtCategoryID
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM tblCategory WHERE CategoryID=" & lngID)
+
+    If Not rs.EOF Then
+        Me.txtCategoryCode = rs!CategoryCode
+        Me.txtCategoryName = rs!CategoryName
+        Me.txtDescription = rs!Description
+        Me.btnSave.Caption = "Update Category"
+    Else
+        MsgBox "No record found for this Category ID.", vbExclamation, "Not Found"
+        Call ClearCategoryForm
+        Me.btnSave.Caption = "Save Category"
+    End If
+
+ExitHere:
+    On Error Resume Next
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical, "Load Error"
+    Resume ExitHere
+End Sub
+Private Sub txtCategoryID_AfterUpdate()
+    Call LoadCategoryData
+End Sub
+Private Sub Form_Load()
+    Call ClearCategoryForm
+    Me.btnSave.Caption = "Save Category"
+End Sub

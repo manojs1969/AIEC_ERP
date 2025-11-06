@@ -1,0 +1,481 @@
+Private Sub txtIDNO_AfterUpdate()
+    LoadEmployeeData Me.txtIDNO.Value
+End Sub
+
+Private Sub Form_Load()
+    Dim formKey As String
+    ' Remove "Form_" prefix so it matches table values
+    formKey = Replace(Me.Name, "Form_", "")
+    
+    ' Check permissions
+    If Not HasPermission(formKey, "CanView") Then
+        MsgBox "You do not have permission to view this form.", vbExclamation
+        DoCmd.Close acForm, Me.Name
+        Exit Sub
+    End If
+
+    ' Populate txtState combo box with list of states
+    Me.txtState.rowSource = "SELECT States.NameOfState FROM States ORDER BY States.NameOfState;"
+    Me.txtState.RowSourceType = "Table/Query"
+
+    ' Load employee data if IDNO is available
+    If Not IsNull(Me.txtIDNO.Value) And Me.txtIDNO.Value <> "" Then
+        LoadEmployeeData Me.txtIDNO.Value
+    End If
+End Sub
+Private Sub imgPicture_Click()
+    Call btnBrowse_Click
+End Sub
+Private Sub btnBrowse_Click()
+    Dim fd As FileDialog
+    Dim sourcePath As String, fileExt As String
+    Dim EmpId As String, destPath As String
+
+    On Error GoTo ErrHandler
+
+    EmpId = Trim(Nz(Me.txtIDNO.Value, ""))
+    If EmpId = "" Then
+        MsgBox "Please enter IDNo before selecting an image.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Sanitize IDNo
+    EmpId = Replace(EmpId, "\", "_")
+    EmpId = Replace(EmpId, "/", "_")
+
+    ' Check folder exists
+    If Dir("Z:\Emp_Images\", vbDirectory) = "" Then
+        MsgBox "Image folder not found. Please check the path or network connection.", vbExclamation
+        Exit Sub
+    End If
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "Select Employee Picture"
+        .Filters.Clear
+        .Filters.Add "Images", "*.jpg; *.jpeg; *.png; *.bmp"
+        .AllowMultiSelect = False
+
+        If .Show = -1 Then
+            sourcePath = .SelectedItems(1)
+            fileExt = Mid(sourcePath, InStrRev(sourcePath, ".")) ' Get extension
+            destPath = "Z:\Emp_Images\Emp" & EmpId & fileExt
+
+            FileCopy sourcePath, destPath
+
+            Me.imgPicture.Picture = destPath
+            Me.imgPicture.Tag = destPath
+        End If
+    End With
+
+ExitHandler:
+    Set fd = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error selecting image: " & Err.Description, vbCritical
+    Resume ExitHandler
+End Sub
+
+Private Sub LoadEmployeeData(strID As String)
+    Dim rs As DAO.Recordset
+    Dim lngID As Long
+    Dim imgPath As String
+
+    If Trim(strID) = "" Then Exit Sub
+    If Not IsNumeric(strID) Then
+        MsgBox "Invalid Employee ID format.", vbExclamation
+        Exit Sub
+    End If
+
+    lngID = CLng(strID)
+
+    Set rs = CurrentDb.OpenRecordset("SELECT * FROM EmpDB WHERE IDNo = " & lngID & ";", dbOpenSnapshot)
+
+    If Not rs.EOF Then
+        Me.txtEmpNo = rs!EmpNo
+        Me.CboLocation = rs!Location
+        Me.txtName = rs!Name
+        Me.txtDOB = rs!DOB
+        Me.cboSex = rs!Sex
+        Me.txtFName = rs!FathersName
+        Me.txtDOJ = rs!DOJ
+        Me.txtMobileNo = rs!MobileNo
+        Me.txtQualifiction = rs!Qualifiction
+        Me.cboDesignation = rs!Designation
+        Me.cboDept = rs!Dept
+        Me.txtHsNo = rs!Hou_No
+        Me.txtAddress = rs!Address
+        Me.txtAddres_1 = rs!Addres_1
+        Me.txtDist = rs!Dist
+        Me.txtState = rs!State
+        Me.txtPIN = rs!PIN_Code
+        Me.cboBloodGr = rs!BloodGr
+        Me.txtAadhar = rs!AadharNo
+        Me.cboCompanys = rs!Company
+
+        ' ? Correct mapping of Working status
+        Select Case Nz(rs!Working, "")
+            Case "Y": Me.cboWorking = "Yes"
+            Case "N": Me.cboWorking = "No"
+            Case Else: Me.cboWorking = Null
+        End Select
+
+        Me.txtDOL = rs!DOL
+        Me.txtROL = rs!ROL
+        Me.txtIFSC = rs!IFSC
+        Me.txtBank_Ac = rs!Bank_Ac
+        Me.txtUAN = rs!UAN
+        Me.txtESI_IP = rs!ESI_IP
+
+        ' Load image if path is valid
+        imgPath = Nz(rs!Picture, "")
+        If Len(imgPath) > 0 And Len(Dir(imgPath)) > 0 Then
+            Me.imgPicture.Picture = imgPath
+            Me.imgPicture.Tag = imgPath
+        Else
+            Me.imgPicture.Picture = ""
+            Me.imgPicture.Tag = ""
+        End If
+    Else
+        MsgBox "Record not found for IDNo: " & lngID, vbExclamation
+    End If
+
+    rs.Close
+    Set rs = Nothing
+End Sub
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim workingStatus As String
+    Dim ctl As Control
+    Dim dupCheck As Variant
+
+    ' Determine Working status value
+    Select Case Me.cboWorking
+        Case "Yes": workingStatus = "Y"
+        Case "No":  workingStatus = "N"
+        Case Else:  workingStatus = ""
+    End Select
+
+    Set db = CurrentDb
+
+    ' ---- Duplicate Check ----
+    If Nz(Me.txtAadhar, "") <> "" Then
+        dupCheck = DLookup("IDNo", "EmpDB", "AadharNo='" & Me.txtAadhar & "'")
+        If Not IsNull(dupCheck) Then
+            MsgBox "Duplicate AadharNo found!" & vbCrLf & _
+                   "IDNo: " & dupCheck, vbExclamation
+            GoTo ExitHandler
+        End If
+    End If
+
+    If Nz(Me.txtUAN, "") <> "" Then
+        dupCheck = DLookup("IDNo", "EmpDB", "UAN='" & Me.txtUAN & "'")
+        If Not IsNull(dupCheck) Then
+            MsgBox "Duplicate UAN found!" & vbCrLf & _
+                   "IDNo: " & dupCheck, vbExclamation
+            GoTo ExitHandler
+        End If
+    End If
+
+    If Nz(Me.txtESI_IP, "") <> "" Then
+        dupCheck = DLookup("IDNo", "EmpDB", "ESI_IP='" & Me.txtESI_IP & "'")
+        If Not IsNull(dupCheck) Then
+            MsgBox "Duplicate ESI_IP found!" & vbCrLf & _
+                   "IDNo: " & dupCheck, vbExclamation
+            GoTo ExitHandler
+        End If
+    End If
+    ' -------------------------
+
+    Set rs = db.OpenRecordset("EmpDB", dbOpenDynaset)
+    rs.AddNew
+
+    rs!EmpNo = Nz(Me.txtEmpNo, "")
+    rs!Location = Nz(Me.CboLocation, "")
+    rs!Name = Nz(Me.txtName, "")
+
+    ' DOB
+    If IsDate(Me.txtDOB) Then
+        rs!DOB = CDate(Me.txtDOB)
+    Else
+        rs!DOB = Null
+    End If
+
+    rs!Sex = Nz(Me.cboSex, "")
+    rs!FathersName = Nz(Me.txtFName, "")
+
+    ' DOJ
+    If IsDate(Me.txtDOJ) Then
+        rs!DOJ = CDate(Me.txtDOJ)
+    Else
+        rs!DOJ = Null
+    End If
+
+    rs!MobileNo = Nz(Me.txtMobileNo, "")
+    rs!Qualifiction = Nz(Me.txtQualifiction, "")
+    rs!Designation = Nz(Me.cboDesignation, "")
+    rs!Dept = Nz(Me.cboDept, "")
+    rs!Hou_No = Nz(Me.txtHsNo, "")
+    rs!Address = Nz(Me.txtAddress, "")
+    rs!Addres_1 = Nz(Me.txtAddres_1, "")
+    rs!Dist = Nz(Me.txtDist, "")
+    rs!State = Nz(Me.txtState, "")
+    rs!PIN_Code = Val(Nz(Me.txtPIN, 0))
+    rs!BloodGr = Nz(Me.cboBloodGr, "")
+    rs!AadharNo = Nz(Me.txtAadhar, "")
+    rs!Company = Nz(Me.cboCompanys, "")
+    rs!Working = workingStatus
+
+    ' DOL
+    If IsDate(Me.txtDOL) Then
+        rs!DOL = CDate(Me.txtDOL)
+    Else
+        rs!DOL = Null
+    End If
+
+    ' ROL check
+    If Nz(Me.txtDOL, "") = "" Then
+        rs!ROL = Null
+    Else
+        If Nz(Me.txtROL, "") = "" Then
+            MsgBox "Must enter the Reason of Leaving", vbExclamation
+            rs.CancelUpdate
+            GoTo ExitHandler
+        Else
+            rs!ROL = Me.txtROL
+        End If
+    End If
+
+    rs!IFSC = Nz(Me.txtIFSC, "")
+    rs!Bank_Ac = Nz(Me.txtBank_Ac, "")
+    rs!UAN = Nz(Me.txtUAN, "")
+    rs!ESI_IP = Nz(Me.txtESI_IP, "")
+
+    If Len(Nz(Me.imgPicture.Tag, "")) > 0 Then
+        If Len(Dir(Me.imgPicture.Tag)) > 0 Then
+            rs!Picture = Me.imgPicture.Tag
+        Else
+            MsgBox "Image file not found at specified path. Please reselect.", vbExclamation
+            rs!Picture = Null
+        End If
+    Else
+        rs!Picture = Null
+    End If
+
+    rs.Update
+    MsgBox "Employee record saved successfully!", vbInformation
+    
+    ' Clear form fields
+    For Each ctl In Me.Controls
+        Select Case ctl.ControlType
+            Case acTextBox, acComboBox
+                ctl.Value = Null
+        End Select
+    Next ctl
+    ' Clear image control
+    Me.imgPicture.Picture = ""
+    Me.imgPicture.Tag = ""
+    
+    Me.txtIDNO.SetFocus
+
+ExitHandler:
+    If Not rs Is Nothing Then rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume ExitHandler
+End Sub
+
+Public Function UpdateEmployeeRecord(frm As Form) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim dupRS As DAO.Recordset
+    Dim idKey As Variant
+    Dim workingStatus As String
+    Dim uniqueFields As Variant
+    Dim fieldName As Variant
+    Dim checkValue As Variant
+    Dim sqlCheck As String
+    Dim fieldMap As Object
+
+    ' Get IDNo key value
+    idKey = Nz(frm!txtIDNO, Null)
+    If IsNull(idKey) Or Not IsNumeric(idKey) Then
+        MsgBox "Please enter a valid numeric IDNo to update the record.", vbExclamation
+        UpdateEmployeeRecord = False
+        Exit Function
+    End If
+
+    ' Determine Working status value
+    Select Case frm!cboWorking
+        Case "Yes": workingStatus = "Y"
+        Case "No":  workingStatus = "N"
+        Case Else:  workingStatus = ""
+    End Select
+
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM EmpDB WHERE IDNo = " & idKey & ";", dbOpenDynaset)
+
+    If rs.EOF Then
+        MsgBox "No record found with IDNo: " & idKey, vbInformation
+        UpdateEmployeeRecord = False
+        GoTo ExitHandler
+    End If
+
+    ' Map field names to control names
+    Set fieldMap = CreateObject("Scripting.Dictionary")
+    fieldMap.Add "MobileNo", "txtMobileNo"
+    fieldMap.Add "AadharNo", "txtAadhar"
+    fieldMap.Add "Bank_Ac", "txtBank_Ac"
+    fieldMap.Add "UAN", "txtUAN"
+    fieldMap.Add "ESI_IP", "txtESI_IP"
+
+    uniqueFields = Array("MobileNo", "AadharNo", "Bank_Ac", "UAN", "ESI_IP")
+    For Each fieldName In uniqueFields
+        If fieldMap.Exists(fieldName) Then
+            checkValue = Nz(frm.Controls(fieldMap(fieldName)), "")
+            If checkValue <> "" Then
+                If fieldName = "MobileNo" Then
+                    sqlCheck = "SELECT IDNo FROM EmpDB WHERE " & fieldName & " = " & Val(checkValue) & " AND IDNo <> " & idKey
+                Else
+                    sqlCheck = "SELECT IDNo FROM EmpDB WHERE " & fieldName & " = '" & Replace(checkValue, "'", "''") & "' AND IDNo <> " & idKey
+                End If
+                Set dupRS = db.OpenRecordset(sqlCheck)
+                If Not dupRS.EOF Then
+                    MsgBox fieldName & " already exists for another record. Please enter a unique value.", vbExclamation
+                    dupRS.Close: Set dupRS = Nothing
+                    UpdateEmployeeRecord = False
+                    GoTo ExitHandler
+                End If
+                dupRS.Close: Set dupRS = Nothing
+            End If
+        End If
+    Next fieldName
+
+    rs.Edit
+
+    With frm
+        rs!EmpNo = Nz(.txtEmpNo, "")
+        rs!Location = Nz(.CboLocation, "")
+        rs!Name = Nz(.txtName, "")
+        If Nz(.txtDOB, "") <> "" Then
+            rs!DOB = CDate(.txtDOB)
+        Else
+            rs!DOB = Null
+        End If
+
+        rs!Sex = Nz(.cboSex, "")
+        rs!FathersName = Nz(.txtFName, "")
+        If Nz(.txtDOJ, "") <> "" Then
+            rs!DOJ = CDate(.txtDOJ)
+        Else
+            rs!DOJ = Null
+        End If
+        rs!MobileNo = Nz(.txtMobileNo, "")
+        rs!Qualifiction = Nz(.txtQualifiction, "")
+        rs!Designation = Nz(.cboDesignation, "")
+        rs!Dept = Nz(.cboDept, "")
+        rs!Hou_No = Nz(.txtHsNo, "")
+        rs!Address = Nz(.txtAddress, "")
+        rs!Addres_1 = Nz(.txtAddres_1, "")
+        rs!Dist = Nz(.txtDist, "")
+        rs!State = Nz(.txtState, "")
+        rs!PIN_Code = Val(Nz(.txtPIN, 0))
+        rs!BloodGr = Nz(.cboBloodGr, "")
+        rs!AadharNo = Nz(.txtAadhar, "")
+        rs!Company = Nz(.cboCompanys, "")
+        rs!Working = workingStatus
+        If Nz(.txtDOL, "") <> "" Then
+            rs!DOL = CDate(.txtDOL)
+        Else
+            rs!DOL = Null
+        End If
+
+        If Nz(.txtDOL, "") = "" Then
+            rs!ROL = Null
+        Else
+            If Nz(.txtROL, "") = "" Then
+                MsgBox "Must enter the Reason of Leaving", vbExclamation
+                rs.CancelUpdate
+                UpdateEmployeeRecord = False
+                GoTo ExitHandler
+            Else
+                rs!ROL = .txtROL
+            End If
+        End If
+
+        rs!IFSC = Nz(.txtIFSC, "")
+        rs!Bank_Ac = Nz(.txtBank_Ac, "")
+        rs!UAN = Nz(.txtUAN, "")
+        rs!ESI_IP = Nz(.txtESI_IP, "")
+
+        If Len(Nz(.imgPicture.Tag, "")) > 0 Then
+            rs!Picture = .imgPicture.Tag
+        End If
+    End With
+
+    rs.Update
+    MsgBox "Record updated successfully!", vbInformation
+    UpdateEmployeeRecord = True
+    
+    ' ? Clear form fields
+For Each ctl In frm.Controls
+    Select Case ctl.ControlType
+        Case acTextBox, acComboBox
+            ctl.Value = Null
+    End Select
+Next ctl
+
+' ? Clear image control
+frm.imgPicture.Picture = ""
+frm.imgPicture.Tag = ""
+
+Me.txtIDNO.SetFocus
+
+GoTo ExitHandler
+
+ExitHandler:
+    If Not rs Is Nothing Then rs.Close: Set rs = Nothing
+    If Not db Is Nothing Then Set db = Nothing
+    Exit Function
+    
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    UpdateEmployeeRecord = False
+    Resume ExitHandler
+End Function
+
+Private Sub btnUpdate_Click()
+    If UpdateEmployeeRecord(Me) Then
+        ' Optional: Clear form fields after successful update
+        Dim ctl As Control
+        For Each ctl In Me.Controls
+            Select Case ctl.ControlType
+                Case acTextBox, acComboBox
+                    ctl.Value = Null
+            End Select
+        Next ctl
+    End If
+End Sub
+Private Sub Form_Current()
+    If Len(Nz(Me.Picture, "")) > 0 Then
+        If Len(Dir(Me.Picture)) > 0 Then
+            Me.imgPicture.Picture = Me.Picture
+            Me.imgPicture.Tag = Me.Picture
+        Else
+            Me.imgPicture.Picture = ""
+            Me.imgPicture.Tag = ""
+        End If
+    Else
+        Me.imgPicture.Picture = ""
+        Me.imgPicture.Tag = ""
+    End If
+End Sub

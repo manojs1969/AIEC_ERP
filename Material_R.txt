@@ -1,0 +1,332 @@
+Private Sub Form_Load()
+    Dim formKey As String
+    ' Remove "Form_" prefix so it matches table values
+    formKey = Replace(Me.Name, "Form_", "")
+    ' ?? Check permissions
+    If Not HasPermission(formKey, "CanView") Then
+        MsgBox "You do not have permission to view this form.", vbExclamation
+        DoCmd.Close acForm, Me.Name
+        Exit Sub
+    End If
+
+    PopulateCombo cboSite, "SELECT SiteName FROM Location"
+    Dim i As Integer
+    For i = 0 To 7
+        PopulateCombo Me.Controls("cboVendor" & i), "SELECT VendorN FROM Vendor"
+        PopulateCombo Me.Controls("cboMaterial" & i), "SELECT ItemName FROM ItemMaster"
+        PopulateCombo Me.Controls("cboUOM" & i), "SELECT Unit FROM Unit"
+    Next i
+End Sub
+
+Private Sub PopulateCombo(ctrl As ComboBox, SQL As String)
+    ctrl.rowSource = SQL
+    ctrl.Requery
+End Sub
+Private Sub HandleVendorChange(vendorIndex As Integer)
+    If IsNull(Me.txtDate) Or IsNull(Me.cboSite) Or IsNull(Me.Controls("cboVendor" & vendorIndex)) Then
+        Exit Sub
+    End If
+
+    Dim userChoice As VbMsgBoxResult
+    userChoice = MsgBox("Do you want to view existing data?", vbYesNo + vbQuestion, "View Existing Data")
+
+    If userChoice = vbYes Then
+        ' === Load existing data ===
+        Call LoadMaterialEntries
+    Else
+        ' === Continue new data entry ===
+        ' Move to the next logical control in the same row (e.g., txtChNoX)
+        Dim nextCtrlName As String
+        nextCtrlName = "txtChNo" & vendorIndex
+        
+        If Not IsNull(Me.Controls(nextCtrlName)) Then
+            Me.Controls(nextCtrlName).SetFocus
+        End If
+    End If
+End Sub
+
+Private Sub btnLoadData_Click()
+    Call LoadMaterialEntries
+End Sub
+Private Sub cboVendor0_AfterUpdate()
+    Call HandleVendorChange(0)
+End Sub
+Private Sub cboVendor1_AfterUpdate()
+    Call HandleVendorChange(1)
+End Sub
+Private Sub cboVendor2_AfterUpdate()
+    Call HandleVendorChange(2)
+End Sub
+Private Sub cboVendor3_AfterUpdate()
+    Call HandleVendorChange(3)
+End Sub
+Private Sub cboVendor4_AfterUpdate()
+    Call HandleVendorChange(4)
+End Sub
+Private Sub cboVendor5_AfterUpdate()
+    Call HandleVendorChange(5)
+End Sub
+Private Sub cboVendor6_AfterUpdate()
+    Call HandleVendorChange(6)
+End Sub
+Private Sub cboVendor7_AfterUpdate()
+    Call HandleVendorChange(7)
+End Sub
+Private Sub cboVendor8_AfterUpdate()
+    Call HandleVendorChange(8)
+End Sub
+Private Sub cboVendor9_AfterUpdate()
+    Call HandleVendorChange(9)
+End Sub
+
+Private Sub LoadMaterialEntries()
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim rDate As Date
+    Dim SiteName As String
+    Dim Vendor As String
+    Dim i As Integer
+
+    Set db = CurrentDb
+    rDate = Nz(Me.txtDate.value, Date)
+    SiteName = Nz(Me.cboSite.value, "")
+    Vendor = Nz(Me.cboVendor0.value, "") ' Assuming Vendor0 is the main selector
+
+    If SiteName = "" Or Vendor = "" Then
+        MsgBox "Please select both Site and Vendor.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim SQL As String
+    SQL = "SELECT * FROM MaterialR WHERE R_Date = #" & Format(rDate, "mm\/dd\/yyyy") & "# " & _
+          "AND Location = '" & Replace(SiteName, "'", "''") & "' " & _
+          "AND Supplier = '" & Replace(Vendor, "'", "''") & "'"
+
+    Set rs = db.OpenRecordset(SQL, dbOpenSnapshot)
+
+    If rs.EOF Then
+        MsgBox "No existing records found for selected Date, Site, and Vendor.", vbInformation
+        rs.Close
+        Exit Sub
+    End If
+
+    i = 0
+    Do While Not rs.EOF And i <= 7
+        Me.Controls("txtChNo" & i).value = rs!ChallanNo
+        Me.Controls("txtVehNo" & i).value = rs!VehicleNo
+        Me.Controls("cboMaterial" & i).value = rs!Material
+        Me.Controls("cboUOM" & i).value = rs!Unit
+        Me.Controls("txtQuant" & i).value = rs!Quantity
+        Me.Controls("cboVendor" & i).value = rs!Supplier
+        i = i + 1
+        rs.MoveNext
+    Loop
+
+    rs.Close
+End Sub
+
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim rDate As Date
+    Dim SiteName As String
+    Dim rowsSaved As Integer
+    Dim dupDate As Variant
+    
+    Set db = CurrentDb
+    rDate = CDate(Nz(Me.txtDate.value, Date))
+    SiteName = Nz(Me.cboSite.value, "")
+    
+    If SiteName = "" Then
+        MsgBox "Please select a site.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Open MaterialR once
+    Set rs = db.OpenRecordset("MaterialR", dbOpenDynaset)
+    
+    rowsSaved = 0
+    For i = 0 To 7
+        Dim Vendor As String, chNo As String, vehNo As String
+        Dim Material As String, UOM As String
+        Dim qty As Variant
+        
+        Vendor = Nz(Me.Controls("cboVendor" & i).value, "")
+        chNo = Nz(Me.Controls("txtChNo" & i).value, "")
+        vehNo = Nz(Me.Controls("txtVehNo" & i).value, "")
+        Material = Nz(Me.Controls("cboMaterial" & i).value, "")
+        UOM = Nz(Me.Controls("cboUOM" & i).value, "")
+        qty = Nz(Me.Controls("txtQuant" & i).value, 0)
+        
+        ' Skip blank rows silently
+        If Vendor = "" And chNo = "" And vehNo = "" And Material = "" And UOM = "" And qty = 0 Then
+            GoTo NextRow
+        End If
+        
+        ' Skip incomplete rows silently
+        If vehNo = "" Or Vendor = "" Or Material = "" Or UOM = "" Or qty <= 0 Then
+            GoTo NextRow
+        End If
+        
+        ' === Duplicate check ===
+        If chNo <> "" Then
+            dupDate = DLookup("r_Date", "MaterialR", "ChallanNo='" & chNo & "'")
+            If Not IsNull(dupDate) Then
+                MsgBox "This Challan No. has already been entered on dated " & _
+                       Format(dupDate, "dd-mmm-yyyy") & ".", vbExclamation, "Duplicate Challan"
+                GoTo NextRow
+            End If
+        End If
+        
+        ' === Add new record ===
+        rs.AddNew
+        rs!r_Date = rDate
+        rs!Location = SiteName
+        rs!Supplier = Vendor
+        rs!ChallanNo = IIf(chNo = "", Null, chNo)
+        rs!VehicleNo = vehNo
+        rs!Material = Material
+        rs!Unit = UOM
+        rs!Quantity = qty
+        rs.Update
+        rowsSaved = rowsSaved + 1
+        
+NextRow:
+    Next i
+    
+    rs.Close
+    
+    If rowsSaved > 0 Then
+        MsgBox rowsSaved & " record(s) saved successfully.", vbInformation
+    Else
+        MsgBox "Nothing to save.", vbExclamation
+    End If
+    
+    ClearForm
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical, "Save Error"
+    On Error Resume Next
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+End Sub
+
+Private Sub btnUpdate_Click()
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim rDate As Date
+    Dim SiteName As String
+    Dim rowsUpdated As Integer
+
+    Set db = CurrentDb
+    rDate = Nz(Me.txtDate.value, Date)
+    SiteName = Nz(Me.cboSite.value, "")
+
+    If SiteName = "" Then
+        MsgBox "Please select a site.", vbExclamation
+        Exit Sub
+    End If
+
+    rowsUpdated = 0
+
+    For i = 0 To 7
+        Dim Vendor As String, chNo As String, vehNo As String
+        Dim Material As String, UOM As String
+        Dim qty As Variant
+        Dim SQL As String
+
+        Vendor = Nz(Me.Controls("cboVendor" & i).value, "")
+        chNo = Nz(Me.Controls("txtChNo" & i).value, "")
+        vehNo = Nz(Me.Controls("txtVehNo" & i).value, "")
+        Material = Nz(Me.Controls("cboMaterial" & i).value, "")
+        UOM = Nz(Me.Controls("cboUOM" & i).value, "")
+        qty = Nz(Me.Controls("txtQuant" & i).value, 0)
+
+        ' Skip blank rows
+        If Vendor = "" And chNo = "" And vehNo = "" And Material = "" And UOM = "" And qty = 0 Then
+            GoTo NextRow
+        End If
+
+        ' Skip incomplete rows
+        If vehNo = "" Or Vendor = "" Or Material = "" Or UOM = "" Or qty <= 0 Then
+            GoTo NextRow
+        End If
+
+        ' Build SQL to find matching record
+        If chNo = "" Then
+            SQL = "SELECT * FROM MaterialR WHERE ChallanNo IS NULL " & _
+                  "AND R_Date = #" & Format(rDate, "mm\/dd\/yyyy") & "# " & _
+                  "AND Location = '" & Replace(SiteName, "'", "''") & "' " & _
+                  "AND Supplier = '" & Replace(Vendor, "'", "''") & "'"
+        Else
+            SQL = "SELECT * FROM MaterialR WHERE ChallanNo = '" & Replace(chNo, "'", "''") & "' " & _
+                  "AND R_Date = #" & Format(rDate, "mm\/dd\/yyyy") & "# " & _
+                  "AND Location = '" & Replace(SiteName, "'", "''") & "' " & _
+                  "AND Supplier = '" & Replace(Vendor, "'", "''") & "'"
+        End If
+
+        Set rs = db.OpenRecordset(SQL, dbOpenDynaset)
+
+        If Not rs.EOF Then
+            rs.Edit
+            rs!VehicleNo = vehNo
+            rs!Material = Material
+            rs!Unit = UOM
+            rs!Quantity = qty
+            rs.Update
+            rowsUpdated = rowsUpdated + 1
+        End If
+
+        rs.Close
+
+NextRow:
+    Next i
+
+    If rowsUpdated > 0 Then
+        MsgBox rowsUpdated & " record(s) updated successfully.", vbInformation
+    Else
+        MsgBox "No matching records found to update.", vbExclamation
+    End If
+    ClearForm
+End Sub
+
+Private Function IsDuplicate(chNo As String, db As DAO.Database) As Boolean
+    Dim SQL As String
+    Dim rs As DAO.Recordset
+    Dim challanCriteria As String
+
+    ' Handle NULL challan properly
+    If chNo = "" Then
+        challanCriteria = "ChallanNo IS NULL"
+    Else
+        challanCriteria = "ChallanNo = '" & Replace(chNo, "'", "''") & "'"
+    End If
+
+    SQL = "SELECT 1 FROM MaterialR WHERE " & challanCriteria
+
+    Set rs = db.OpenRecordset(SQL, dbOpenSnapshot)
+    IsDuplicate = Not rs.EOF
+    rs.Close
+End Function
+
+Private Sub ClearForm()
+    Me.txtDate = Null
+    Me.cboSite = Null
+
+    Dim i As Integer
+    For i = 0 To 7
+        Me.Controls("cboVendor" & i).value = Null
+        Me.Controls("txtChNo" & i).value = ""
+        Me.Controls("txtVehNo" & i).value = ""
+        Me.Controls("cboMaterial" & i).value = Null
+        Me.Controls("cboUOM" & i).value = Null
+        Me.Controls("txtQuant" & i).value = ""
+    Next i
+End Sub
+

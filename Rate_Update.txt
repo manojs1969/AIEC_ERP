@@ -1,0 +1,74 @@
+Private Sub cboSitename_AfterUpdate()
+    Me!SubView.Requery
+End Sub
+
+Private Sub cboItemName_AfterUpdate()
+    Me.txtItemtype = Me.CboItemName.Column(1)   'Column index is zero-based (0 = ItemName, 1 = ItemType)
+End Sub
+
+Private Sub btnSave_Click()
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    
+    '--- Validate input before saving ---
+    If IsNull(Me.cboSiteName) Or Me.cboSiteName = "" Then
+        MsgBox "Please select a Site Name.", vbExclamation
+        Exit Sub
+    End If
+    
+    If IsNull(Me.CboItemName) Or Me.CboItemName = "" Then
+        MsgBox "Please select an Item Name.", vbExclamation
+        Exit Sub
+    End If
+    
+    If IsNull(Me.cboUOM) Or Me.cboUOM = "" Then
+        MsgBox "Please select UOM.", vbExclamation
+        Exit Sub
+    End If
+    
+    If IsNull(Me.txtGenRate) Or Not IsNumeric(Me.txtGenRate) Then
+        MsgBox "Please enter a valid Rate.", vbExclamation
+        Exit Sub
+    End If
+    
+    '--- Open database object ---
+    Set db = CurrentDb
+    
+    '--- Check if record already exists for same Site & Item ---
+    strSQL = "SELECT * FROM Rate WHERE SiteName = '" & Me.cboSiteName & "' AND ItemName = '" & Me.CboItemName & "';"
+    Set rs = db.OpenRecordset(strSQL, dbOpenDynaset)
+    
+    If rs.EOF Then
+        '--- Add New Record ---
+        rs.AddNew
+        rs!SiteName = Me.cboSiteName
+        rs!ItemName = Me.CboItemName
+        rs!ItemType = Me.txtItemtype
+        rs!UOM = Me.cboUOM
+        rs!GenRate = CDbl(Me.txtGenRate)
+        rs.Update
+        MsgBox "Record saved successfully.", vbInformation
+    Else
+        '--- Prevent Duplicate ---
+        MsgBox "A record already exists for this Site and Item. Duplicate not allowed.", vbExclamation
+    End If
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    '--- Refresh SubForm to show updated data ---
+    Me.SubView.Form.Requery
+
+ExitHere:
+    Exit Sub
+    
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume ExitHere
+End Sub
+
+

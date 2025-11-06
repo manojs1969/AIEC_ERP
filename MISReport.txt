@@ -1,0 +1,129 @@
+Private Sub btnExport_Click()
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim xlApp As Object, xlWB As Object, xlWS As Object
+    Dim i As Long, rowNum As Long
+    Dim grandTotals() As Double
+    Dim colCount As Long
+    Dim ExDate As Variant
+    Dim SiteCode As Variant
+    Dim sql As String
+    Dim dateLiteral As String
+
+    ' Get values from form controls
+    ExDate = Forms!MISReport!txtExDate
+    SiteCode = Forms!MISReport!cboSite
+
+    ' Format date for Access SQL (must be mm/dd/yyyy inside #)
+    dateLiteral = "#" & Format(ExDate, "mm\/dd\/yyyy") & "#"
+
+    ' Build SQL with correct sitecode handling
+sql = "SELECT BOQ.ItemCode, CStr(BOQ.BOQItem) AS BOQItem, BOQ.BOQRate, DPR.UOM, BOQ.BOQQty, " & _
+      "Sum(IIf(DPR.ExDate=" & dateLiteral & ", DPR.Quant, 0)) AS Quantity_Daily, " & _
+      "Sum(IIf(Month(DPR.ExDate)=Month(" & dateLiteral & ") And DPR.ExDate<=" & dateLiteral & ", DPR.Quant, 0)) AS Quantity_Monthly, " & _
+      "Sum(IIf(DPR.ExDate<=" & dateLiteral & ", DPR.Quant, 0)) AS Quantity_Cumulative, " & _
+      "Sum(IIf(DPR.ExDate=" & dateLiteral & ", DPR.Quant*BOQ.BOQRate, 0)) AS WD_Today, " & _
+      "Sum(IIf(Month(DPR.ExDate)=Month(" & dateLiteral & ") And DPR.ExDate<=" & dateLiteral & ", DPR.Quant*BOQ.BOQRate, 0)) AS WD_TM, " & _
+      "Sum(IIf(DPR.ExDate<=" & dateLiteral & ", DPR.Quant*BOQ.BOQRate, 0)) AS WD_Cumulative " & _
+      "FROM BOQ INNER JOIN DPR ON (BOQ.Location = DPR.SiteCode) AND (BOQ.ItemCode = DPR.ItemCode) " & _
+      "WHERE DPR.SiteCode = " & IIf(IsNumeric(SiteCode), SiteCode, "'" & SiteCode & "'") & " " & _
+      "GROUP BY BOQ.ItemCode, CStr(BOQ.BOQItem), BOQ.BOQRate, DPR.UOM, BOQ.BOQQty " & _
+      "HAVING Sum(IIf(DPR.ExDate=" & dateLiteral & ",1,0)) > 0 OR Sum(DPR.Quant) > 0"
+
+    ' Initialize Excel
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlWS = xlWB.Sheets(1)
+
+    ' Get data
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset(sql, dbOpenSnapshot)
+
+    If rs.EOF Then
+        MsgBox "No data found.", vbInformation
+        rs.Close: Set rs = Nothing
+        Exit Sub
+    End If
+
+    colCount = rs.Fields.Count
+    ReDim grandTotals(colCount - 1)
+
+    ' === Report Header ===
+    Dim SiteName As String
+    SiteName = Nz(DLookup("SiteName", "Location", "LocationID=" & _
+                IIf(IsNumeric(SiteCode), SiteCode, "'" & SiteCode & "'")), SiteCode)
+
+    With xlWS.Range(xlWS.Cells(1, 1), xlWS.Cells(1, colCount))
+        .Merge
+        .Value = "Daily MIS Report for Site " & SiteName & _
+                " as on " & Format(ExDate, "dd-mmm-yyyy")
+        .HorizontalAlignment = -4108   ' xlCenter
+        .Font.Bold = True
+        .Font.Size = 14
+    End With
+
+    ' Shift headers down to row 3
+    Dim headerRow As Long
+    headerRow = 3
+
+    ' Write headers
+    For i = 0 To colCount - 1
+        xlWS.Cells(headerRow, i + 1).Value = rs.Fields(i).Name
+        xlWS.Cells(headerRow, i + 1).Font.Bold = True
+    Next i
+
+    ' Dump recordset under headers
+    xlWS.Range("A" & headerRow + 1).CopyFromRecordset rs
+    ' Autofit columns
+    xlWS.Columns.AutoFit
+
+    ' === Format numeric fields ===
+    With xlWS
+        ' Adjust column indexes based on your SELECT query order:
+        ' 1=ItemCode, 2=BOQItem, 3=BOQRate, 4=UOM, 5=BOQQty, 6=Quantity_Daily,
+        ' 7=Quantity_Monthly, 8=Quantity_Cumulative, 9=WD_Today, 10=WD_TM, 11=WD_Cumulative
+
+        .Columns(9).NumberFormat = "#,##0.00"  ' WD_Today
+        .Columns(10).NumberFormat = "#,##0.00" ' WD_TM
+        .Columns(11).NumberFormat = "#,##0.00" ' WD_Cumulative
+    End With
+
+    ' Row count = headerRow + record count
+    rowNum = rs.RecordCount + headerRow + 1
+
+    ' Reset recordset to calculate totals
+    rs.MoveFirst
+    Do While Not rs.EOF
+        For i = 0 To colCount - 1
+            ' Skip columns that should not have grand totals
+            Select Case rs.Fields(i).Name
+                Case "BOQRate", "BOQQty", "Quantity_Daily", "Quantity_Monthly", "Quantity_Cumulative"
+                    ' Do nothing
+                Case Else
+                    If IsNumeric(rs.Fields(i).Value) Then
+                        grandTotals(i) = grandTotals(i) + CDbl(Nz(rs.Fields(i).Value, 0))
+                    End If
+            End Select
+        Next i
+        rs.MoveNext
+    Loop
+
+    ' Write Grand Total row
+    xlWS.Cells(rowNum, 1).Value = "Grand Total"
+    xlWS.Cells(rowNum, 1).Font.Bold = True
+    For i = 0 To colCount - 1
+        If grandTotals(i) <> 0 Then
+            xlWS.Cells(rowNum, i + 1).Value = CDbl(grandTotals(i))
+            xlWS.Cells(rowNum, i + 1).Font.Bold = True
+        End If
+    Next i
+
+
+    ' Autofit columns
+    xlWS.Columns.AutoFit
+
+    ' Cleanup
+    rs.Close: Set rs = Nothing
+    Set db = Nothing
+End Sub

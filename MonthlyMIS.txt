@@ -1,0 +1,205 @@
+Enum MISColumns
+    colItemCode = 1
+    colBOQItem
+    colBOQRate
+    colUOM
+    colBOQQty
+    colWorkDoneToday
+    colThisMonthQty
+    colPreviousMonthQty
+    colQtyCumulative
+    colAmountWorkDoneToday
+    colWD_ThisMonth
+    colWD_PreviousMonth
+    colWD_Cumulative
+End Enum
+Private Function BuildMISQuery(reportDate As Date, reportLocation As Variant) As String
+    Dim sql As String
+    sql = "SELECT BOQ.ItemCode, CStr(BOQ.BOQItem) AS BOQItem, BOQ.BOQRate, DPR.UOM, BOQ.BOQQty, " & _
+          "Sum(IIf([DPR].[ExDate]=#" & reportDate & "#,[DPR].[Quant],0)) AS WorkDoneToday, " & _
+          "Sum(IIf(Month([DPR].[ExDate])=Month(#" & reportDate & "#) And Year([DPR].[ExDate])=Year(#" & reportDate & "#),[DPR].[Quant],0)) AS ThisMonthQuantity, " & _
+          "Sum(IIf(Month([DPR].[ExDate])=Month(DateAdd('m',-1,#" & reportDate & "#)) And Year([DPR].[ExDate])=Year(DateAdd('m',-1,#" & reportDate & "#)),[DPR].[Quant],0)) AS PreviousMonthQuantity, " & _
+          "Sum(IIf([DPR].[ExDate]<=#" & reportDate & "#,[DPR].[Quant],0)) AS Quantity_Cumulative, " & _
+          "Sum(IIf([DPR].[ExDate]=#" & reportDate & "#,[DPR].[Quant]*[BOQ].[BOQRate],0)) AS Amount_WorkDoneToday, " & _
+          "Sum(IIf(Month([DPR].[ExDate])=Month(#" & reportDate & "#) And Year([DPR].[ExDate])=Year(#" & reportDate & "#),[DPR].[Quant]*[BOQ].[BOQRate],0)) AS WD_ThisMonth, " & _
+          "Sum(IIf(Month([DPR].[ExDate])=Month(DateAdd('m',-1,#" & reportDate & "#)) And Year([DPR].[ExDate])=Year(DateAdd('m',-1,#" & reportDate & "#)),[DPR].[Quant]*[BOQ].[BOQRate],0)) AS WD_PreviousMonth, " & _
+          "Sum(IIf([DPR].[ExDate]<=#" & reportDate & "#,[DPR].[Quant]*[BOQ].[BOQRate],0)) AS WD_Cumulative " & _
+          "FROM BOQ INNER JOIN DPR ON (BOQ.[Location] = DPR.[SiteCode]) AND (BOQ.ItemCode = DPR.ItemCode) " & _
+          "WHERE DPR.SiteCode = " & reportLocation & " " & _
+          "GROUP BY BOQ.ItemCode, CStr(BOQ.BOQItem), BOQ.BOQRate, DPR.UOM, BOQ.BOQQty " & _
+          "HAVING Sum(IIf([DPR].[ExDate]<=#" & reportDate & "#,[DPR].[Quant],0)) > 0 OR " & _
+          "Sum(IIf(Month([DPR].[ExDate])=Month(DateAdd('m',-1,#" & reportDate & "#)) And Year([DPR].[ExDate])=Year(DateAdd('m',-1,#" & reportDate & "#)),[DPR].[Quant],0)) > 0;"
+    BuildMISQuery = sql
+End Function
+Private Sub FormatMISReport(xlWsh As Object, lastDataRow As Long, totalRow As Long)
+    With xlWsh
+        ' Grand Total Label
+        .Cells(totalRow, MISColumns.colWD_ThisMonth - 1).Value = "Grand Total"
+
+        ' Totals
+        '.Cells(totalRow, MISColumns.colWorkDoneToday).Formula = "=SUM(" & .Cells(5, MISColumns.colWorkDoneToday).Address & ":" & .Cells(lastDataRow, MISColumns.colWorkDoneToday).Address & ")"
+        .Cells(totalRow, MISColumns.colAmountWorkDoneToday).Formula = "=SUM(" & .Cells(5, MISColumns.colAmountWorkDoneToday).Address & ":" & .Cells(lastDataRow, MISColumns.colAmountWorkDoneToday).Address & ")"
+        .Cells(totalRow, MISColumns.colWD_ThisMonth).Formula = "=SUM(" & .Cells(5, MISColumns.colWD_ThisMonth).Address & ":" & .Cells(lastDataRow, MISColumns.colWD_ThisMonth).Address & ")"
+        .Cells(totalRow, MISColumns.colWD_PreviousMonth).Formula = "=SUM(" & .Cells(5, MISColumns.colWD_PreviousMonth).Address & ":" & .Cells(lastDataRow, MISColumns.colWD_PreviousMonth).Address & ")"
+        .Cells(totalRow, MISColumns.colWD_Cumulative).Formula = "=SUM(" & .Cells(5, MISColumns.colWD_Cumulative).Address & ":" & .Cells(lastDataRow, MISColumns.colWD_Cumulative).Address & ")"
+
+        ' Formatting
+        .Range(.Cells(5, MISColumns.colBOQRate), .Cells(lastDataRow, MISColumns.colWD_Cumulative)).NumberFormat = "0.00"
+        .Range(.Cells(totalRow, MISColumns.colWorkDoneToday), .Cells(totalRow, MISColumns.colWD_Cumulative)).Font.Bold = True
+        .Columns.AutoFit
+    End With
+End Sub
+Private Sub btnViewReport_Click()
+    ' === Constants ===
+    Const REPORT_FILE_NAME As String = "Monthly_MIS.xlsx"
+    Const HEADER_ROW As Long = 4
+    Const DATA_START_ROW As Long = 5
+
+    ' === Variable Declarations ===
+    Dim xlApp As Object, xlWbk As Object, xlWsh As Object
+    Dim qdf As DAO.QueryDef, rst As DAO.Recordset, db As DAO.Database
+    Dim reportLocation As Variant, reportDate As Date, siteName As String
+    Dim formattedDate As String, strQuerySQL As String, strFilePath As String
+    Dim lastDataRow As Long, totalRow As Long, i As Long
+
+    On Error GoTo ErrorHandler
+
+    ' === Validate Inputs ===
+    If IsNull(Me.cboLocation) Or IsNull(Me.cboSelectMonth) Then
+        MsgBox "Please select a Site and a Report Date.", vbExclamation, "Missing Parameters"
+        Exit Sub
+    End If
+
+    reportLocation = Me.cboLocation.Value
+    reportDate = Me.cboSelectMonth.Value
+    siteName = DLookup("SiteName", "Location", "LocationID = " & reportLocation)
+    formattedDate = Format(reportDate, "dd-mmm-yyyy")
+    strFilePath = CurrentProject.Path & "\" & REPORT_FILE_NAME
+
+    If Dir(strFilePath) = "" Then
+        EnsureWorkbookExists strFilePath
+    End If
+
+    ' === Build SQL Query ===
+    strQuerySQL = BuildMISQuery(reportDate, reportLocation)
+
+    ' === Run Query and Get Recordset ===
+    Set db = CurrentDb
+    Set qdf = db.CreateQueryDef("", strQuerySQL)
+    Set rst = qdf.OpenRecordset
+
+    If rst.EOF And rst.BOF Then
+        MsgBox "No data found for the selected criteria.", vbInformation, "No Data"
+        GoTo CleanUp
+    End If
+
+    ' === Excel Automation ===
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    Set xlWbk = xlApp.Workbooks.Open(strFilePath)
+    Set xlWsh = xlWbk.Sheets(1)
+
+    ' === Header ===
+    With xlWsh
+        .Cells(2, 1).Value = "Report for Site: " & siteName & " for the date " & formattedDate
+        .Range(.Cells(2, 1), .Cells(2, rst.Fields.Count)).Merge
+        .Range("A2").Font.Bold = True
+        .Range("A4:M4").Font.Bold = True
+
+        ' === Clear Previous Data ===
+        .Range(.Cells(DATA_START_ROW, 1), .Cells(.Rows.Count, rst.Fields.Count)).ClearContents
+        .Columns("B:B").NumberFormat = "@"
+
+        ' === Add Column Headers ===
+        For i = 0 To rst.Fields.Count - 1
+            .Cells(HEADER_ROW, i + 1).Value = rst.Fields(i).Name
+        Next i
+
+        ' === Paste Data ===
+        .Cells(DATA_START_ROW, 1).CopyFromRecordset rst
+
+        ' === Totals and Formatting ===
+        lastDataRow = .Cells(.Rows.Count, "A").End(xlUp).Row
+        totalRow = lastDataRow + 1
+        FormatMISReport xlWsh, lastDataRow, totalRow
+    End With
+
+    ' === Save and Close ===
+    xlWbk.Save
+    xlWbk.Close False
+    xlApp.Quit
+
+    MsgBox "Report generated successfully.", vbInformation, "Success"
+
+CleanUp:
+    On Error Resume Next
+    If Not rst Is Nothing Then rst.Close
+    Set rst = Nothing
+    Set qdf = Nothing
+    Set db = Nothing
+    Set xlWsh = Nothing
+    Set xlWbk = Nothing
+    If Not xlApp Is Nothing Then xlApp.Quit: Set xlApp = Nothing
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description & ". The report may not be complete. Please check the Excel file.", vbCritical, "Error"
+    Resume CleanUp
+End Sub
+
+    ' === Excel Automation ===
+Private Sub EnsureWorkbookExists(strFilePath As String)
+    Dim xlAppTemp As Object
+    Dim xlWbkTemp As Object
+    Dim xlWshTemp As Object
+
+    Set xlAppTemp = CreateObject("Excel.Application")
+    xlAppTemp.Visible = False
+
+    Set xlWbkTemp = xlAppTemp.Workbooks.Add
+    Set xlWshTemp = xlWbkTemp.Sheets(1)
+    xlWshTemp.Name = "Monthly MIS"
+
+    ' Optional: Add placeholder headers
+    Dim headers As Variant
+    headers = Array("ItemCode", "BOQItem", "BOQRate", "UOM", "BOQQty", "WorkDoneToday", "ThisMonthQuantity", _
+                    "PreviousMonthQuantity", "Quantity_Cumulative", "Amount_WorkDoneToday", _
+                    "WD_ThisMonth", "WD_PreviousMonth", "WD_Cumulative")
+
+    Dim i As Long
+    For i = LBound(headers) To UBound(headers)
+        xlWshTemp.Cells(4, i + 1).Value = headers(i)
+    Next i
+    xlAppTemp.DisplayAlerts = False
+    xlWbkTemp.SaveAs strFilePath, FileFormat:=51 ' xlOpenXMLWorkbook (.xlsx)
+    xlAppTemp.DisplayAlerts = True
+    xlWbkTemp.SaveAs strFilePath
+    xlWbkTemp.Close False
+    xlAppTemp.Quit
+
+    Set xlWshTemp = Nothing
+    Set xlWbkTemp = Nothing
+    Set xlAppTemp = Nothing
+
+CleanUp:
+    If Not rst Is Nothing Then rst.Close
+    Set rst = Nothing
+    Set qdf = Nothing
+    Set db = Nothing
+    Set xlWsh = Nothing
+    Set xlWbk = Nothing
+    If Not xlApp Is Nothing Then xlApp.Quit: Set xlApp = Nothing
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description & ". The report may not be complete. Please check the Excel file.", vbCritical, "Error"
+
+    On Error Resume Next
+    If Not xlWbk Is Nothing Then xlWbk.Close False
+    If Not xlApp Is Nothing Then xlApp.Quit
+    Set xlWsh = Nothing
+    Set xlWbk = Nothing
+    Set xlApp = Nothing
+    Resume CleanUp
+End Sub
+

@@ -1,0 +1,311 @@
+Private Sub btnSave_Click()
+    On Error GoTo ErrorHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim strSQL As String
+    Dim totalVal As Double
+    Dim itemExists As Boolean
+    Dim msg As String
+    Dim prefix As String
+    Dim nextNum As Long
+    Dim newItemCode As String
+    
+    Set db = CurrentDb
+    
+    '--- Basic Validation ---
+    If IsNull(Me.txtItemName) Or Trim(Me.txtItemName & "") = "" Then
+        MsgBox "Please enter Item Name.", vbExclamation, "Validation"
+        Me.txtItemName.SetFocus
+        Exit Sub
+    End If
+    
+    If IsNull(Me.txtCategoryID) Then
+        MsgBox "Please select Category.", vbExclamation, "Validation"
+        Me.txtCategoryID.SetFocus
+        Exit Sub
+    End If
+    
+    '--- Calculate Total Value ---
+    totalVal = Nz(Me.txtUnitCost, 0) * Nz(Me.txtCurrentStock, 0)
+    
+    '--- IMPROVED Duplicate Check ---
+    ' Check for existing ItemCode OR ItemName separately to provide specific error messages
+    Dim itemCodeExists As Boolean
+    Dim itemNameExists As Boolean
+    Dim existingItemCode As String
+    Dim existingItemName As String
+    
+    ' Check for duplicate ItemCode
+    If Not IsNull(Me.txtItemCode) And Me.txtItemCode <> "" Then
+        strSQL = "SELECT ItemID, ItemCode, ItemName FROM tblItem WHERE ItemCode='" & Replace(Nz(Me.txtItemCode, ""), "'", "''") & "'"
+        
+        ' Exclude current ItemID if updating
+        If Not IsNull(Me.txtItemID) And Me.txtItemID <> "" Then
+            strSQL = strSQL & " AND ItemID <> " & CLng(Me.txtItemID)
+        End If
+        
+        Set rs = db.OpenRecordset(strSQL)
+        If Not rs.EOF Then
+            itemCodeExists = True
+            existingItemCode = Nz(rs!ItemCode, "")
+            existingItemName = Nz(rs!ItemName, "")
+        End If
+        rs.Close
+        Set rs = Nothing
+    End If
+    
+    ' Check for duplicate ItemName
+    If Not itemCodeExists Then ' Only check name if code doesn't already exist
+        strSQL = "SELECT ItemID, ItemCode, ItemName FROM tblItem WHERE ItemName='" & Replace(Nz(Me.txtItemName, ""), "'", "''") & "'"
+        
+        ' Exclude current ItemID if updating
+        If Not IsNull(Me.txtItemID) And Me.txtItemID <> "" Then
+            strSQL = strSQL & " AND ItemID <> " & CLng(Me.txtItemID)
+        End If
+        
+        Set rs = db.OpenRecordset(strSQL)
+        If Not rs.EOF Then
+            itemNameExists = True
+            existingItemCode = Nz(rs!ItemCode, "")
+            existingItemName = Nz(rs!ItemName, "")
+        End If
+        rs.Close
+        Set rs = Nothing
+    End If
+    
+    ' Show appropriate error message
+    If itemCodeExists Then
+        MsgBox "An item with Item Code '" & Me.txtItemCode & "' already exists." & vbCrLf & _
+               "Existing Item: " & existingItemName & " (" & existingItemCode & ")" & vbCrLf & _
+               "Please use a different Item Code.", vbExclamation, "Duplicate Item Code"
+        Exit Sub
+    ElseIf itemNameExists Then
+        MsgBox "An item with Name '" & Me.txtItemName & "' already exists." & vbCrLf & _
+               "Existing Item: " & existingItemName & " (" & existingItemCode & ")" & vbCrLf & _
+               "Please use a different Item Name.", vbExclamation, "Duplicate Item Name"
+        Exit Sub
+    End If
+    
+    '--- Auto Generate ItemCode (only for new items) ---
+    If IsNull(Me.txtItemID) Or Me.txtItemID = "" Then
+        ' Only generate code if not already provided
+        If IsNull(Me.txtItemCode) Or Trim(Me.txtItemCode & "") = "" Then
+            prefix = UCase(Left(Replace(Nz(Me.txtItemName, ""), " ", ""), 3))
+            If Len(prefix) < 3 Then prefix = "ITM"
+            
+            strSQL = "SELECT MAX(Val(Mid(ItemCode, 4))) AS MaxNum " & _
+                     "FROM tblItem WHERE Left(ItemCode, 3)='" & prefix & "';"
+            Set rs = db.OpenRecordset(strSQL)
+            
+            If Not rs.EOF And Not IsNull(rs!MaxNum) Then
+                nextNum = rs!MaxNum + 1
+            Else
+                nextNum = 1
+            End If
+            rs.Close
+            Set rs = Nothing
+            
+            newItemCode = prefix & Format(nextNum, "000")
+            Me.txtItemCode = newItemCode
+        End If
+    End If
+    
+    '--- Insert or Update Record ---
+    If IsNull(Me.txtItemID) Or Me.txtItemID = "" Then
+        ' Add New Record
+        strSQL = "INSERT INTO tblItem " & _
+                 "(ItemCode, ItemName, ItemDescription, CategoryID, UOM, HSNCode, PartNumber, Brand, Model, " & _
+                 "ReorderLevel, OpeningStock, CurrentStock, UnitCost, TotalValue, Location, Status, Remarks, " & _
+                 "CreatedDate, CreatedBy) " & _
+                 "VALUES (" & _
+                 "'" & Replace(Nz(Me.txtItemCode, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtItemName, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtItemDescription, ""), "'", "''") & "', " & _
+                 IIf(IsNull(Me.txtCategoryID), "Null", Me.txtCategoryID) & ", " & _
+                 "'" & Replace(Nz(Me.txtUOM, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtHSNCode, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtPartNumber, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtBrand, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtModel, ""), "'", "''") & "', " & _
+                 Nz(Me.txtReorderLevel, 0) & ", " & _
+                 Nz(Me.txtOpeningStock, 0) & ", " & _
+                 Nz(Me.txtCurrentStock, 0) & ", " & _
+                 Nz(Me.txtUnitCost, 0) & ", " & _
+                 totalVal & ", " & _
+                 "'" & Replace(Nz(Me.txtLocation, ""), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.cboStatus, "Active"), "'", "''") & "', " & _
+                 "'" & Replace(Nz(Me.txtRemarks, ""), "'", "''") & "', " & _
+                 "#" & Format(Now(), "yyyy-mm-dd hh:nn:ss") & "#, " & _
+                 "'" & Replace(Environ("Username"), "'", "''") & "');"
+        
+        db.Execute strSQL, dbFailOnError
+        msg = "Item saved successfully with code " & Me.txtItemCode
+        
+    Else
+        ' Update Existing Record
+        strSQL = "UPDATE tblItem SET " & _
+                 "ItemCode='" & Replace(Nz(Me.txtItemCode, ""), "'", "''") & "', " & _
+                 "ItemName='" & Replace(Nz(Me.txtItemName, ""), "'", "''") & "', " & _
+                 "ItemDescription='" & Replace(Nz(Me.txtItemDescription, ""), "'", "''") & "', " & _
+                 "CategoryID=" & IIf(IsNull(Me.txtCategoryID), "Null", Me.txtCategoryID) & ", " & _
+                 "UOM='" & Replace(Nz(Me.txtUOM, ""), "'", "''") & "', " & _
+                 "HSNCode='" & Replace(Nz(Me.txtHSNCode, ""), "'", "''") & "', " & _
+                 "PartNumber='" & Replace(Nz(Me.txtPartNumber, ""), "'", "''") & "', " & _
+                 "Brand='" & Replace(Nz(Me.txtBrand, ""), "'", "''") & "', " & _
+                 "Model='" & Replace(Nz(Me.txtModel, ""), "'", "''") & "', " & _
+                 "ReorderLevel=" & Nz(Me.txtReorderLevel, 0) & ", " & _
+                 "OpeningStock=" & Nz(Me.txtOpeningStock, 0) & ", " & _
+                 "CurrentStock=" & Nz(Me.txtCurrentStock, 0) & ", " & _
+                 "UnitCost=" & Nz(Me.txtUnitCost, 0) & ", " & _
+                 "TotalValue=" & totalVal & ", " & _
+                 "Location='" & Replace(Nz(Me.txtLocation, ""), "'", "''") & "', " & _
+                 "Status='" & Replace(Nz(Me.cboStatus, "Active"), "'", "''") & "', " & _
+                 "Remarks='" & Replace(Nz(Me.txtRemarks, ""), "'", "''") & "', " & _
+                 "ModifiedDate=#" & Format(Now(), "yyyy-mm-dd hh:nn:ss") & "#, " & _
+                 "ModifiedBy='" & Replace(Environ("Username"), "'", "''") & "' " & _
+                 "WHERE ItemID=" & CLng(Me.txtItemID) & ";"
+        
+        db.Execute strSQL, dbFailOnError
+        msg = "Item updated successfully."
+    End If
+    
+    MsgBox msg, vbInformation, "Success"
+    Me.Requery
+    Call ClearItemForm
+    
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description & vbCrLf & _
+           "Please contact your system administrator.", vbCritical, "Database Error"
+    If Not rs Is Nothing Then
+        rs.Close
+        Set rs = Nothing
+    End If
+    Set db = Nothing
+End Sub
+
+Private Sub txtItemName_Change()
+    On Error GoTo ErrHandler
+    
+    Dim sText As String
+    Dim sSQL As String
+    
+    sText = Nz(Me.txtItemName.text, "")
+    
+    ' Only trigger search after 3 characters
+    If Len(sText) >= 3 Then
+        sSQL = "SELECT ItemID, ItemCode, ItemName, ItemDescription, CategoryID, CurrentStock " & _
+               "FROM tblItem " & _
+               "WHERE ItemName LIKE '*" & Replace(sText, "'", "''") & "*' " & _
+               "OR ItemCode LIKE '*" & Replace(sText, "'", "''") & "*' " & _
+               "OR ItemDescription LIKE '*" & Replace(sText, "'", "''") & "*' " & _
+               "ORDER BY ItemName;"
+        
+        Me.lstItemLookup.rowSource = sSQL
+        Me.lstItemLookup.Visible = True
+    Else
+        Me.lstItemLookup.Visible = False
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "txtItemName_Change error: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+Private Sub Form_DblClick(Cancel As Integer)
+    Forms!frmItem.txtItemID = Me!ItemID
+    Forms!frmItem.Form_Load  ' Load item details into form
+    Forms!frmItem.subItemLookup.Visible = False
+End Sub
+
+Private Sub txtItemName_LostFocus()
+    Me.lstItemLookup.Visible = False
+End Sub
+
+Public Sub ClearItemForm()
+    Me.txtItemID = Null
+    Me.txtItemCode = Null
+    Me.txtItemName = Null
+    Me.txtItemDescription = Null
+    Me.txtCategoryID = Null
+    Me.txtUOM = Null
+    Me.txtHSNCode = Null
+    Me.txtPartNumber = Null
+    Me.txtBrand = Null
+    Me.txtModel = Null
+    Me.txtReorderLevel = Null
+    Me.txtOpeningStock = Null
+    Me.txtCurrentStock = Null
+    Me.txtUnitCost = Null
+    Me.txtTotalValue = Null
+    Me.txtLocation = Null
+    Me.cboStatus = Null
+    Me.txtRemarks = Null
+End Sub
+
+Private Sub Form_Load()
+    Call LoadItemDetails
+End Sub
+Private Sub txtItemID_AfterUpdate()
+    Call LoadItemDetails
+End Sub
+
+Private Sub LoadItemDetails()
+    'Dim ItemID As String
+    'Dim ItemCode As String
+    'Dim ItemName As String
+    On Error Resume Next
+    
+    If Not IsNull(Me.txtItemID) And Me.txtItemID <> "" Then
+        Dim rs As DAO.Recordset
+        Dim strSQL As String
+        
+        strSQL = "SELECT * FROM tblItem WHERE ItemID=" & Me.txtItemID
+        Set rs = CurrentDb.OpenRecordset(strSQL)
+        
+        If Not rs.EOF Then
+            Me.txtItemCode = rs!ItemCode
+            Me.txtItemName = rs!ItemName
+            Me.txtItemDescription = rs!ItemDescription
+            Me.txtCategoryID = rs!CategoryID
+            Me.txtUOM = rs!UOM
+            Me.txtHSNCode = rs!HSNCode
+            Me.txtPartNumber = rs!PartNumber
+            Me.txtBrand = rs!Brand
+            Me.txtModel = rs!Model
+            Me.txtReorderLevel = rs!ReorderLevel
+            Me.txtOpeningStock = rs!OpeningStock
+            Me.txtCurrentStock = rs!CurrentStock
+            Me.txtUnitCost = rs!UnitCost
+            Me.txtTotalValue = rs!TotalValue
+            Me.txtLocation = rs!Location
+            Me.cboStatus = rs!Status
+            Me.txtRemarks = rs!Remarks
+        End If
+        
+        rs.Close
+        Set rs = Nothing
+        Me.btnSave.Caption = "Update Item"
+    Else
+        Me.btnSave.Caption = "Save Item"
+        Call ClearItemForm
+    End If
+End Sub
+
+Private Sub lstItemLookup_Click()
+    Dim lngItemID As Long
+    lngItemID = Me.lstItemLookup.Column(0) ' ItemID (hidden first column)
+    
+    ' Load the selected item record into the form
+    DoCmd.GoToRecord , , acNewRec
+    Me.RecordSource = "SELECT * FROM tblItem WHERE ItemID = " & lngItemID
+    Me.Requery
+    
+    ' Hide the listbox after selection
+    Me.lstItemLookup.Visible = False
+End Sub

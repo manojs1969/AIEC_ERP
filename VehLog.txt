@@ -1,0 +1,425 @@
+Private Sub Form_Load()
+    Dim i As Integer
+    For i = 0 To 9
+        Me("cboEqupType" & i).rowSource = "SELECT DISTINCT EqupType FROM VehicleDB ORDER BY EqupType"
+    Next i
+End Sub
+Private Sub Form_BeforeUpdate(Cancel As Integer)
+    If Me.NewRecord Then
+        Cancel = True
+    End If
+End Sub
+
+Private Sub UpdateRegNumRow(equpTypeControl As Control, regNumControl As Control)
+    Dim strSQL As String
+    If Not IsNull(equpTypeControl.Value) Then
+        strSQL = "SELECT RegNum FROM VehicleDB WHERE EqupType = '" & equpTypeControl.Value & "'"
+        regNumControl.rowSource = strSQL
+        regNumControl.Requery
+    Else
+        regNumControl.rowSource = ""
+    End If
+End Sub
+Private Sub cboEqupType0_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType0, Me.cboRegNum0
+End Sub
+Private Sub cboEqupType1_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType1, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType2_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType2, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType3_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType3, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType4_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType4, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType5_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType5, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType6_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType6, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType7_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType7, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType8_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType8, Me.cboRegNum1
+End Sub
+Private Sub cboEqupType9_AfterUpdate()
+    UpdateRegNumRow Me.cboEqupType9, Me.cboRegNum1
+End Sub
+
+Private Sub cboRegNum0_AfterUpdate()
+    UpdateRowData 0
+End Sub
+Private Sub cboRegNum1_AfterUpdate()
+    UpdateRowData 1
+End Sub
+Private Sub cboRegNum2_AfterUpdate()
+    UpdateRowData 2
+End Sub
+Private Sub cboRegNum3_AfterUpdate()
+    UpdateRowData 3
+End Sub
+Private Sub cboRegNum4_AfterUpdate()
+    UpdateRowData 4
+End Sub
+Private Sub cboRegNum5_AfterUpdate()
+    UpdateRowData 5
+End Sub
+Private Sub cboRegNum6_AfterUpdate()
+    UpdateRowData 6
+End Sub
+Private Sub cboRegNum7_AfterUpdate()
+    UpdateRowData 7
+End Sub
+Private Sub cboRegNum8_AfterUpdate()
+    UpdateRowData 8
+End Sub
+Private Sub cboRegNum9_AfterUpdate()
+    UpdateRowData 9
+End Sub
+Private Sub UpdateRowData(i As Integer)
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+    Dim prevClosReading As Variant
+    Dim response As VbMsgBoxResult
+    Dim avgFuelConsumptionCurrentMonth As Variant
+    Dim avgFuelConsumptionPreviousMonth As Variant
+    Dim RegNum As String
+
+    RegNum = Nz(Me("cboRegNum" & i).Value, "")
+    If RegNum = "" Then Exit Sub
+
+    strSQL = "SELECT TOP 1 ClosReading FROM VehLog " & _
+             "WHERE RegNum = '" & RegNum & "' " & _
+             "ORDER BY OprDate DESC"
+
+    Set rs = CurrentDb.OpenRecordset(strSQL, dbOpenSnapshot)
+    If Not rs.EOF Then
+        prevClosReading = rs!ClosReading
+    Else
+        prevClosReading = Null
+    End If
+    rs.Close
+    Set rs = Nothing
+
+    With Me("txtOpenReading" & i)
+        If Not IsNull(prevClosReading) Then
+            .Value = prevClosReading
+        Else
+            response = MsgBox("Do you want to add Opening Reading here?", vbYesNo + vbQuestion, "Add Opening Reading")
+            If response = vbYes Then
+                .Value = Null
+                .SetFocus
+            Else
+                .Value = "Enter opening reading here"
+            End If
+        End If
+    End With
+
+    avgFuelConsumptionCurrentMonth = CalculateAverageFuelConsumptionForMonth(RegNum, 0)
+    avgFuelConsumptionPreviousMonth = CalculateAverageFuelConsumptionForMonth(RegNum, -1)
+
+    Me("lblAF" & i).Caption = IIf(Not IsNull(avgFuelConsumptionCurrentMonth), _
+        Format(avgFuelConsumptionCurrentMonth, "0.00") & " Ltrs./Unit", "No data")
+
+    Me("lblAFPM" & i).Caption = IIf(Not IsNull(avgFuelConsumptionPreviousMonth), _
+        Format(avgFuelConsumptionPreviousMonth, "0.00") & " Ltrs./Unit", "No data")
+End Sub
+
+Private Sub DisableUnusedRows()
+    Dim j As Integer
+    For j = 0 To 9
+        If IsNull(Me("cboRegNum" & j).Value) And IsNull(Me("OprDate" & j).Value) Then
+        Me("txtOpenReading" & i).BackColor = RGB(255, 255, 200) ' Light yellow
+            ' Clear only unused rows
+            Me("cboEqupType" & j).Value = Null
+            Me("txtOpenReading" & j).Value = Null
+            Me("txtClosReading" & j).Value = Null
+            Me("txtFuelIssue" & j).Value = Null
+            Me("txtLubIssue" & j).Value = Null
+            Me("cboRunLocat" & j).Value = Null
+            Me("txtSummary" & j).Value = Null
+            Me("cboAttend" & j).Value = Null
+        End If
+    Next j
+End Sub
+
+Function CalculateAverageFuelConsumptionForMonth(RegNum As String, monthOffset As Integer) As Variant
+    Dim strSQL As String
+    Dim rs As DAO.Recordset
+    Dim totalFuelIssue As Double
+    Dim totalRunningHours As Double
+    Dim firstDayOfMonth As Date
+    Dim lastDayOfMonth As Date
+
+    firstDayOfMonth = DateSerial(Year(Date), Month(Date) + monthOffset, 1)
+    lastDayOfMonth = DateSerial(Year(Date), Month(Date) + monthOffset + 1, 0)
+
+    strSQL = "SELECT SUM(FuelIssue) AS TotalFuelIssue, " & _
+             "(MAX(ClosReading) - MIN(OpenReading)) AS TotalRunningHours " & _
+             "FROM VehLog " & _
+             "WHERE RegNum = '" & RegNum & "' " & _
+             "AND OprDate >= #" & firstDayOfMonth & "# AND OprDate <= #" & lastDayOfMonth & "# " & _
+             "GROUP BY RegNum"
+
+    Set rs = CurrentDb.OpenRecordset(strSQL, dbOpenSnapshot)
+
+    If Not rs.EOF Then
+        totalFuelIssue = Nz(rs!totalFuelIssue, 0)
+        totalRunningHours = Nz(rs!totalRunningHours, 0)
+    End If
+
+    rs.Close
+    Set rs = Nothing
+
+    If totalRunningHours <> 0 Then
+        CalculateAverageFuelConsumptionForMonth = totalFuelIssue / totalRunningHours
+    Else
+        CalculateAverageFuelConsumptionForMonth = Null
+    End If
+End Function
+
+Private Sub btnSave_Click()
+    Dim i As Integer
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim ctlDate As Control
+    Dim RegNum As String
+    Dim OprDate As Variant
+    Dim duplicateExists As Boolean
+    Dim Summary As String
+
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("VehLog", dbOpenDynaset)
+
+    For i = 0 To 9
+        Set ctlDate = Me("OprDate" & i)
+        RegNum = Nz(Me("cboRegNum" & i).Value, "")
+        OprDate = Nz(Me("OprDate" & i).Value, Null)
+
+        If RegNum <> "" And Not IsNull(OprDate) Then
+            duplicateExists = Not IsNull(DLookup("OprDate", "VehLog", _
+                "RegNum = '" & RegNum & "' AND OprDate = #" & Format(OprDate, "mm/dd/yyyy") & "#"))
+
+            If duplicateExists Then
+                MsgBox "Data for Reg. Num '" & RegNum & "' is already available for " & Format(OprDate, "dd-mmm-yyyy") & ".", vbExclamation, "Duplicate Entry"
+            Else
+                On Error GoTo SaveError
+                rs.AddNew
+                rs!OprDate = OprDate
+                rs!EqupType = Me("cboEqupType" & i).Value
+                rs!RegNum = RegNum
+                rs!OpenReading = Me("txtOpenReading" & i).Value
+                rs!ClosReading = Me("txtClosReading" & i).Value
+                rs!FuelIssue = Me("txtFuelIssue" & i).Value
+                rs!LubIssue = Me("txtLubIssue" & i).Value
+                rs!RunLocat = Me("cboRunLocat" & i).Value
+                rs!Summary = Nz(Me("txtSummary" & i).Value, "")
+                rs!Attend = Me("cboAttend" & i).Value
+                rs.Update
+            End If
+        End If
+
+        ' Clear controls for this row
+        Me("OprDate" & i).Value = Null
+        Me("cboEqupType" & i).Value = Null
+        Me("cboRegNum" & i).Value = Null
+        Me("txtOpenReading" & i).Value = Null
+        Me("txtClosReading" & i).Value = Null
+        Me("txtFuelIssue" & i).Value = Null
+        Me("txtLubIssue" & i).Value = Null
+        Me("cboRunLocat" & i).Value = Null
+        Me("txtSummary" & i).Value = Null
+        Me("cboAttend" & i).Value = Null
+        Me("lblAF" & i).Caption = ""
+        Me("lblAFPM" & i).Caption = ""
+    Next i
+
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+
+    MsgBox "Data saved successfully.", vbInformation
+    Exit Sub
+
+SaveError:
+    If Err.Number = 3022 Then
+        MsgBox "Duplicate entry detected. Data for this Reg. Num is already available for this date.", vbExclamation, "Error 3022"
+        Resume Next
+    Else
+        MsgBox "Unexpected error: " & Err.Description, vbCritical, "Save Error"
+        Resume Next
+    End If
+End Sub
+Private Sub btnUploadVehDPR_Click()
+    Dim fd As FileDialog
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim LastRow As Long
+    Dim r As Long
+    Dim db As DAO.Database
+    Dim rst As DAO.Recordset
+    Dim sqlCheck As String
+    ' Excel values
+    Dim OprDate As Variant, EqupType As Variant, RegNum As Variant
+    Dim OpenReading As Variant, ClosReading As Variant
+    Dim FuelIssue As Variant, LubIssue As Variant, RunLocat As Variant
+    Dim Attend As Variant, Summary As Variant
+    
+    ' Open file dialog to choose Excel file
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "Select Excel File for Vehicle Log Upload"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xls; *.xlsx"
+    If fd.Show = False Then
+        MsgBox "No file selected.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Open Excel and get VehLog sheet
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWB = xlApp.Workbooks.Open(fd.SelectedItems(1))
+    On Error Resume Next
+    Set xlWS = xlWB.Sheets("VehLog")
+    On Error GoTo 0
+    If xlWS Is Nothing Then
+        MsgBox "Sheet 'VehLog' not found!", vbCritical
+        GoTo Cleanup
+    End If
+    
+    LastRow = xlWS.Cells(xlWS.Rows.Count, "A").End(-4162).Row ' xlUp = -4162
+    
+    Set db = CurrentDb()
+    
+For r = 2 To LastRow
+    ' Read and sanitize values
+    OprDate = xlWS.Cells(r, 1).Value
+    EqupType = Trim(CStr(xlWS.Cells(r, 2).Value))
+    RegNum = Trim(CStr(xlWS.Cells(r, 3).Value))
+    OpenReading = xlWS.Cells(r, 4).Value
+    ClosReading = xlWS.Cells(r, 5).Value
+    FuelIssue = xlWS.Cells(r, 6).Value
+    LubIssue = xlWS.Cells(r, 7).Value
+    RunLocat = xlWS.Cells(r, 8).Value
+    Attend = Trim(CStr(xlWS.Cells(r, 9).Value))
+    Summary = Trim(CStr(xlWS.Cells(r, 10).Value))
+
+    ' Validate required fields
+    If Not IsDate(OprDate) Then
+        MsgBox "Row " & r & ": Invalid or missing 'OprDate'.", vbExclamation
+        GoTo NextRow
+    End If
+
+    If EqupType = "" Or RegNum = "" Or Attend = "" Then
+        MsgBox "Row " & r & ": 'EqupType', 'RegNum', or 'Attend' is missing.", vbExclamation
+        GoTo NextRow
+    End If
+
+    If Not IsNumeric(OpenReading) Or Not IsNumeric(ClosReading) Or Not IsNumeric(RunLocat) Then
+        MsgBox "Row " & r & ": 'OpenReading', 'ClosReading', or 'RunLocat' is invalid or missing.", vbExclamation
+        GoTo NextRow
+    End If
+
+    If ClosReading < OpenReading Then
+        MsgBox "Row " & r & ": 'ClosReading' is less than 'OpenReading'.", vbExclamation
+        GoTo NextRow
+    End If
+
+    ' Duplicate check
+    sqlCheck = "SELECT [ID] FROM [VehLog] WHERE [OprDate] = #" & Format(CDate(OprDate), "mm/dd/yyyy") & "# " & _
+               "AND [RegNum] = '" & Replace(RegNum, "'", "''") & "' " & _
+               "AND [RunLocat] = " & RunLocat
+    Set rst = db.OpenRecordset(sqlCheck, dbOpenSnapshot)
+    If Not rst.EOF Then
+        rst.Close: Set rst = Nothing
+        GoTo NextRow
+    End If
+    rst.Close: Set rst = Nothing
+
+    ' Insert record
+    Set rst = db.OpenRecordset("VehLog", dbOpenDynaset)
+    rst.AddNew
+    rst!OprDate = CDate(OprDate)
+    rst!EqupType = EqupType
+    rst!RegNum = RegNum
+    rst!OpenReading = OpenReading
+    rst!ClosReading = ClosReading
+    rst!FuelIssue = IIf(IsNumeric(FuelIssue), FuelIssue, 0)
+    rst!LubIssue = IIf(IsNumeric(LubIssue), LubIssue, 0)
+    rst!RunLocat = RunLocat
+    rst!Attend = Attend
+    rst!Summary = Summary
+    rst.Update
+    rst.Close: Set rst = Nothing
+
+NextRow:
+Next r
+    
+    MsgBox "Vehicle Log Upload Complete!", vbInformation
+    
+Cleanup:
+    On Error Resume Next
+    xlWB.Close False
+    xlApp.Quit
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+End Sub
+
+Public Sub InsertVehLogRecord(OprDate As Date, EqupType As String, RegNum As String, _
+                              OpenReading As Double, ClosReading As Double, FuelIssue As Double, _
+                              LubIssue As Double, RunLocat As Double, Attend As String, Summary As String, _
+                              frm As Form)
+
+    Dim db As DAO.Database
+    Dim rst As DAO.Recordset
+    Dim newID As Long
+
+    On Error GoTo ErrHandler
+
+    Set db = CurrentDb
+    Set rst = db.OpenRecordset("VehLog", dbOpenDynaset)
+
+    rst.AddNew
+    rst!OprDate = OprDate
+    rst!EqupType = Nz(EqupType, "")
+    rst!RegNum = Nz(RegNum, "")
+    rst!OpenReading = Nz(OpenReading, 0)
+    rst!ClosReading = Nz(ClosReading, 0)
+    rst!FuelIssue = Nz(FuelIssue, 0)
+    rst!LubIssue = Nz(LubIssue, 0)
+    rst!RunLocat = Nz(RunLocat, 0)
+    rst!Attend = Nz(Attend, "")
+    rst!Summary = Nz(Summary, "")
+    rst.Update
+
+    newID = rst!ID
+    rst.Close
+
+    ' ? Display inserted ID
+    frm!txtInsertedID.Value = newID
+
+    ' ? Navigate to inserted record
+    DoCmd.OpenForm frm.Name, acNormal
+    DoCmd.GoToControl "txtInsertedID"
+    DoCmd.FindRecord newID, , True, , True, , True
+
+CleanUp:
+    Set rst = Nothing
+    Set db = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error inserting record: " & Err.Description, vbExclamation, "Insert Error"
+    Resume CleanUp
+
+End Sub
+Private Sub btnInsert_Click()
+    Call InsertVehLogRecord(Me.txtOprDate, Me.cboEqupType, Me.txtRegNum, _
+                            Me.txtOpenReading, Me.txtClosReading, Me.txtFuelIssue, _
+                            Me.txtLubIssue, Me.txtRunLocat, Me.txtAttend, Me.txtSummary, Me)
+End Sub

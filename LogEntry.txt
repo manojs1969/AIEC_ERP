@@ -1,0 +1,25 @@
+Add Logging to Your Update Procedure
+Inside your UpdateEmployeeRecord(frm As Form) function, after each field update, compare old vs new and log if changed:
+--------------------------------------------------------------------
+Sub LogEdit(recordID As Long, fieldName As String, oldVal As Variant, newVal As Variant)
+    Dim db As DAO.Database
+    Set db = CurrentDb
+
+    If Nz(oldVal, "") <> Nz(newVal, "") Then
+        db.Execute "INSERT INTO EditLog (LogTime, UserName, RecordID, FieldName, OldValue, NewValue) " & _
+                   "VALUES (#" & Now() & "#, '" & Environ("Username") & "', " & recordID & ", '" & fieldName & "', '" & Replace(oldVal, "'", "''") & "', '" & Replace(newVal, "'", "''") & "')"
+    End If
+End Sub
+---------------------------------------------------------
+2
+Then, in your update loop:
+-------------------------------------------------------
+Call LogEdit(idKey, "MobileNo", rs!MobileNo, frm!txtMobileNo)
+rs!MobileNo = frm!txtMobileNo
+-------------------------------------------------------------
+
+Repeat for each field you want to track.
+
+
+
+

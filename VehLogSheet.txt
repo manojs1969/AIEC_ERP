@@ -1,0 +1,406 @@
+Function GetDayList() As Variant
+    Dim i As Integer, days(1 To 31) As String
+    For i = 1 To 31
+        days(i) = CStr(i)
+    Next i
+    GetDayList = days
+End Function
+
+Function GetDaysInMonth(ByVal targetYear As Integer, ByVal targetMonth As Integer) As Integer
+    ' Returns the number of days in the given month and year.
+    ' This is a robust way to handle months with 30, 31, or 28/29 days.
+    GetDaysInMonth = Day(DateSerial(targetYear, targetMonth + 1, 0))
+End Function
+
+Function SafeField(r As DAO.Recordset, fName As String, Optional defaultVal As Variant = "") As Variant
+    On Error GoTo SafeFieldError
+
+    If r Is Nothing Then
+        SafeField = defaultVal
+    Else
+        ' Check if the field exists in the recordset's collection
+        On Error Resume Next
+        Dim fld As DAO.Field
+        Set fld = r.Fields(fName)
+        On Error GoTo SafeFieldError
+
+        ' If the field was not found (fld is Nothing), return the default value.
+        If fld Is Nothing Then
+            SafeField = defaultVal
+        ' Otherwise, check if the value of the field is Null.
+        ElseIf IsNull(fld.Value) Then
+            SafeField = defaultVal
+        Else
+            SafeField = fld.Value
+        End If
+    End If
+    Exit Function
+
+SafeFieldError:
+    ' If any other error occurs (like an invalid field name),
+    ' this handler will catch it and return the default value.
+    SafeField = defaultVal
+End Function
+
+Private Sub cboExportReport_Click()
+    Dim xlApp As Object, xlWB As Object, xlWS As Object
+    Dim db As DAO.Database, rs As DAO.Recordset, qdf As DAO.QueryDef
+    Dim rsRate As DAO.Recordset, rateDict As Object
+    Dim selectedMonth As Integer, selectedYear As Integer
+    Dim reportMonthName As String, sql As String
+    Dim dayFields As Collection, summaryFields As Collection
+    Dim fldName As Variant
+    Dim colIndex As Integer, rowIndex As Long
+    Dim fuelIssuedCol As Integer, totRunHoursCol As Integer, hiringCostCol As Integer
+    Dim avgRunLCol As Integer, fuelCostCol As Integer
+    Dim locIDCol As Integer, fuelTypeCol As Integer
+    Dim LastRow As Long, i As Integer
+    Dim compositeKey As String
+
+    On Error GoTo ErrorHandler
+
+    selectedMonth = Me.cbomths
+    selectedYear = Me.cboYr
+    reportMonthName = Format(DateSerial(selectedYear, selectedMonth, 1), "mmmm yyyy")
+
+    sql = "TRANSFORM Format(Sum(Val(VehLog.ClosReading) - Val(VehLog.OpenReading)), '0.0') AS RunningHours " & _
+          "SELECT VehLog.RegNum, VehLog.EqupType, Location.SiteName, Location.LocationID, VehicleDB.FuelType, " & _
+          "Format(Sum(Val(VehLog.ClosReading) - Val(VehLog.OpenReading)), 'Fixed') AS TotRunHours, " & _
+          "Format(Sum(FuelIssue), 'Fixed') AS FuelIssued, " & _
+          "Count(IIf(VehLog.Attend = 'Working' OR VehLog.Attend = 'Idle', 1, Null)) AS WorkingDays, " & _
+          "Format(Sum(VehicleDB.HirCostM / GetDaysInMonth(Year([VehLog].[OprDate]), Month([VehLog].[OprDate])) * " & _
+          "IIf(VehLog.Attend = 'Working' OR VehLog.Attend = 'Idle', 1, 0)), 'Fixed') AS HiringCost " & _
+          "FROM ((VehLog INNER JOIN Location ON VehLog.RunLocat = Location.LocationID) " & _
+          "INNER JOIN VehicleDB ON VehLog.RegNum = VehicleDB.RegNum) " & _
+          "WHERE Month([VehLog].[OprDate]) = " & selectedMonth & " AND Year([VehLog].[OprDate]) = " & selectedYear & " " & _
+          "GROUP BY VehLog.RegNum, VehLog.EqupType, Location.SiteName, Location.LocationID, VehicleDB.FuelType " & _
+          "ORDER BY Location.SiteName " & _
+          "PIVOT DatePart('d', VehLog.OprDate) IN (" & Join(GetDayList(), ",") & ");"
+
+    Set db = CurrentDb
+    On Error Resume Next
+    db.QueryDefs.Delete "qryTempPivotReport"
+    On Error GoTo ErrorHandler
+    Set qdf = db.CreateQueryDef("qryTempPivotReport", sql)
+    Set rs = qdf.OpenRecordset
+    
+    If rs.EOF Then
+        MsgBox "No data found for the selected month/year.", vbInformation
+        GoTo Cleanup
+    End If
+
+    Set rateDict = CreateObject("Scripting.Dictionary")
+    Set rsRate = db.OpenRecordset("SELECT LocationID, ItemName, GenRate FROM Rate")
+    Do While Not rsRate.EOF
+        compositeKey = rsRate!LocationID & "|" & rsRate!ItemName
+        rateDict(compositeKey) = Nz(rsRate!GenRate, 0)
+        rsRate.MoveNext
+    Loop
+    rsRate.Close
+    Set rsRate = Nothing
+
+    Set dayFields = New Collection
+    Set summaryFields = New Collection
+    For i = 0 To rs.Fields.Count - 1
+        Select Case rs.Fields(i).Name
+            Case "TotRunHours", "FuelIssued", "WorkingDays", "HiringCost", "LocationID", "FuelType"
+                summaryFields.Add rs.Fields(i).Name
+            Case Else
+                dayFields.Add rs.Fields(i).Name
+        End Select
+    Next i
+
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = True
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlWS = xlWB.Sheets(1)
+    
+    With xlWS.Range("A1")
+        .Value = "Monthly Pivotal Report for Vehicles and Equipment for the month of " & reportMonthName
+        .Font.Size = 14
+        .Font.Bold = True
+        .Font.Underline = True
+        .HorizontalAlignment = -4108
+    End With
+    xlWS.Range("A1", "Z1").Merge
+
+    colIndex = 1
+    For Each fldName In dayFields
+        xlWS.Cells(3, colIndex).Value = fldName
+        xlWS.Cells(3, colIndex).Font.Bold = True
+        colIndex = colIndex + 1
+    Next fldName
+    For Each fldName In summaryFields
+        xlWS.Cells(3, colIndex).Value = fldName
+        xlWS.Cells(3, colIndex).Font.Bold = True
+        colIndex = colIndex + 1
+    Next fldName
+
+    rowIndex = 4
+    Do While Not rs.EOF
+        colIndex = 1
+        For Each fldName In dayFields
+            xlWS.Cells(rowIndex, colIndex).Value = SafeField(rs, CStr(fldName), "")
+            colIndex = colIndex + 1
+        Next fldName
+        For Each fldName In summaryFields
+            xlWS.Cells(rowIndex, colIndex).Value = SafeField(rs, CStr(fldName), 0)
+            colIndex = colIndex + 1
+        Next fldName
+        rs.MoveNext
+        rowIndex = rowIndex + 1
+    Loop
+    rs.Close
+    Set rs = Nothing
+    
+    xlWS.Columns("A:AZ").AutoFit
+    LastRow = rowIndex - 1
+
+    For i = 1 To xlWS.Cells(3, xlWS.Columns.Count).End(xlToLeft).Column
+        Select Case xlWS.Cells(3, i).Value
+            Case "FuelIssued": fuelIssuedCol = i
+            Case "TotRunHours": totRunHoursCol = i
+            Case "HiringCost": hiringCostCol = i
+            Case "LocationID": locIDCol = i
+            Case "FuelType": fuelTypeCol = i
+        End Select
+    Next i
+
+    If totRunHoursCol = 0 Or fuelIssuedCol = 0 Or hiringCostCol = 0 Or locIDCol = 0 Or fuelTypeCol = 0 Then
+        MsgBox "One or more required report columns were not found. Please check your SQL query and the header names.", vbCritical
+        GoTo Cleanup
+    End If
+    
+    xlWS.Range(xlWS.Cells(4, totRunHoursCol), xlWS.Cells(LastRow, totRunHoursCol)).NumberFormat = "0.00"
+    xlWS.Range(xlWS.Cells(4, fuelIssuedCol), xlWS.Cells(LastRow, fuelIssuedCol)).NumberFormat = "0.00"
+    xlWS.Range(xlWS.Cells(4, hiringCostCol), xlWS.Cells(LastRow, hiringCostCol)).NumberFormat = "0.00"
+    
+    avgRunLCol = fuelIssuedCol + 1
+    xlWS.Columns(avgRunLCol).Insert Shift:=xlToRight
+    xlWS.Cells(3, avgRunLCol).Value = "AvgRunL"
+    xlWS.Cells(3, avgRunLCol).Font.Bold = True
+
+    For i = 4 To LastRow
+        If Val(xlWS.Cells(i, totRunHoursCol).Value) <> 0 Then
+            xlWS.Cells(i, avgRunLCol).Formula = "=" & xlWS.Cells(i, fuelIssuedCol).Address(False, False) & "/" & xlWS.Cells(i, totRunHoursCol).Address(False, False)
+        Else
+            xlWS.Cells(i, avgRunLCol).Value = 0
+        End If
+    Next i
+    xlWS.Range(xlWS.Cells(4, avgRunLCol), xlWS.Cells(LastRow, avgRunLCol)).NumberFormat = "0.00"
+
+    fuelCostCol = avgRunLCol + 1
+    xlWS.Columns(fuelCostCol).Insert Shift:=xlToRight
+    xlWS.Cells(3, fuelCostCol).Value = "FuelCost"
+    xlWS.Cells(3, fuelCostCol).Font.Bold = True
+
+    Dim locID As Variant, fuelType As Variant, fuelIssued As Double, genRate As Double
+    For i = 4 To LastRow
+        locID = xlWS.Cells(i, locIDCol).Value
+        fuelType = xlWS.Cells(i, fuelTypeCol).Value
+        fuelIssued = Val(xlWS.Cells(i, fuelIssuedCol).Value)
+        
+        compositeKey = locID & "|" & fuelType
+        
+        If rateDict.exists(compositeKey) Then
+            genRate = rateDict(compositeKey)
+        Else
+            genRate = 0
+            Debug.Print "Warning: No rate found for LocationID " & locID & " and FuelType " & fuelType
+        End If
+        xlWS.Cells(i, fuelCostCol).Value = fuelIssued * genRate
+    Next i
+    xlWS.Range(xlWS.Cells(4, fuelCostCol), xlWS.Cells(LastRow, fuelCostCol)).NumberFormat = "0.00"
+    
+    With xlWS
+        .Cells(LastRow + 1, 1).Value = "Grand Totals"
+        .Cells(LastRow + 1, 1).Font.Bold = True
+        
+        ' Make the entire totals row bold
+        .Rows(LastRow + 1).Font.Bold = True
+
+        If fuelIssuedCol > 0 Then
+            .Cells(LastRow + 1, fuelIssuedCol).Formula = "=SUM(" & .Cells(4, fuelIssuedCol).Address(False, False) & ":" & .Cells(LastRow, fuelIssuedCol).Address(False, False) & ")"
+        End If
+        
+        If hiringCostCol > 0 Then
+            .Cells(LastRow + 1, hiringCostCol).Formula = "=SUM(" & .Cells(4, hiringCostCol).Address(False, False) & ":" & .Cells(LastRow, hiringCostCol).Address(False, False) & ")"
+        End If
+        
+        If fuelCostCol > 0 Then
+            .Cells(LastRow + 1, fuelCostCol).Formula = "=SUM(" & .Cells(4, fuelCostCol).Address(False, False) & ":" & .Cells(LastRow, fuelCostCol).Address(False, False) & ")"
+        End If
+    End With
+
+Cleanup:
+    If Not rs Is Nothing Then rs.Close
+    If Not rsRate Is Nothing Then rsRate.Close
+    Set rs = Nothing
+    Set rsRate = Nothing
+    Set qdf = Nothing
+    Set db = Nothing
+    Set xlWS = Nothing
+    Set xlWB = Nothing
+    If Not xlApp Is Nothing Then
+        xlApp.Quit
+        Set xlApp = Nothing
+    End If
+    Set rateDict = Nothing
+    Set dayFields = Nothing
+    Set summaryFields = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical
+    GoTo Cleanup
+End Sub
+
+Private Sub EquType_AfterUpdate()
+    Dim strSQL As String
+    
+    If Not IsNull(Me.EquType) Then
+        ' Build SQL query to retrieve RegNum values based on the selected EquipType
+        strSQL = "SELECT RegNum FROM VehicleDB WHERE EqupType = '" & Me.EquType & "'"
+        Debug.Print "Selected Equipment Type: " & Me.EquType
+
+        ' Set the RowSource to the SQL query
+        Me.RegNum.rowSource = strSQL
+        Me.RegNum.Requery
+    Else
+        ' Clear the row source if no Equipment Type is selected
+        Me.RegNum.rowSource = ""
+    End If
+End Sub
+
+-------------------------------------------------------
+Private Sub cmdRepoExport_Click()
+    On Error GoTo Err_Handler
+
+    ' Declare objects
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim rst As DAO.Recordset
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim strSQL As String
+    Dim i As Long, j As Long
+    Dim totalRunHrs As Double, totalFuel As Double, totalLub As Double
+    Dim rowStart As Long, lastRow As Long
+
+    ' Build SQL
+    strSQL = "SELECT VehLog.OprDate, VehLog.OpenReading, VehLog.ClosReading, " & _
+             "Round(Sum([VehLog].[ClosReading]-[VehLog].[OpenReading]),2) AS RunHrs, " & _
+             "VehLog.FuelIssue, VehLog.LubIssue, Location.SiteName " & _
+             "FROM Location INNER JOIN VehLog ON Location.LocationID = VehLog.RunLocat " & _
+             "WHERE VehLog.EqupType = '" & Nz(Me.EquType, "") & "' " & _
+             "AND VehLog.RegNum = '" & Nz(Me.RegNum, "") & "' " & _
+             "AND Month([OprDate]) = " & Nz(Me.cboMth, 0) & " " & _
+             "AND Year([OprDate]) = " & Nz(Me.cboYear, 0) & " " & _
+             "GROUP BY VehLog.OprDate, VehLog.OpenReading, VehLog.ClosReading, " & _
+             "VehLog.FuelIssue, VehLog.LubIssue, Location.SiteName " & _
+             "ORDER BY VehLog.OprDate;"
+
+    ' Initialize Excel
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlWS = xlWB.Sheets(1)
+
+    ' Get data
+    Set db = CurrentDb
+    Set qdf = db.CreateQueryDef("", strSQL)
+    Set rst = qdf.OpenRecordset
+
+    ' Header rows
+    With xlWS.Range("A1:G1")
+        .Merge
+        .Value = "Vehicle / Equipment Log Book of " & Me.RegNum & _
+                 " for the month of " & Format(DateSerial(Me.cboYear, Me.cboMth, 1), "MMM-YYYY")
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = -4108 ' xlCenter
+    End With
+
+    With xlWS.Range("A2:G2")
+        .Merge
+        .Value = "Equipment Type: " & Me.EquType
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = -4108 ' xlCenter
+    End With
+
+    ' Column headers
+    rowStart = 3
+    For i = 0 To rst.Fields.Count - 1
+        xlWS.Cells(rowStart, i + 1).Value = rst.Fields(i).Name
+        xlWS.Cells(rowStart, i + 1).Font.Bold = True
+    Next i
+
+    ' Data rows
+    i = rowStart + 1
+    Do While Not rst.EOF
+        For j = 0 To rst.Fields.Count - 1
+            xlWS.Cells(i, j + 1).Value = rst.Fields(j).Value
+            If IsNumeric(rst.Fields(j).Value) Then
+                xlWS.Cells(i, j + 1).NumberFormat = "#,##0.00"
+            End If
+        Next j
+
+        ' Accumulate totals
+        totalRunHrs = totalRunHrs + Nz(rst!RunHrs, 0)
+        totalFuel = totalFuel + Nz(rst!FuelIssue, 0)
+        totalLub = totalLub + Nz(rst!LubIssue, 0)
+
+        i = i + 1
+        rst.MoveNext
+    Loop
+
+    lastRow = i    ' first empty row after last data
+
+    ' === Totals row ===
+    With xlWS.Range("B" & lastRow & ":G" & lastRow)
+        .Interior.Color = RGB(217, 217, 217) ' Light grey shading
+        .Font.Bold = True
+    End With
+
+    xlWS.Cells(lastRow, 2).Value = "Totals:"
+    xlWS.Cells(lastRow, 4).Value = Round(totalRunHrs, 2)
+    xlWS.Cells(lastRow, 4).NumberFormat = "#,##0.00"
+    xlWS.Cells(lastRow, 5).Value = Round(totalFuel, 2)
+    xlWS.Cells(lastRow, 5).NumberFormat = "#,##0.00"
+    xlWS.Cells(lastRow, 6).Value = Round(totalLub, 2)
+    xlWS.Cells(lastRow, 6).NumberFormat = "#,##0.00"
+
+    ' === Average Fuel row ===
+    With xlWS.Range("E" & lastRow + 2 & ":F" & lastRow + 2)
+        .Interior.Color = RGB(217, 217, 217) ' Light grey shading
+        .Font.Bold = True
+    End With
+
+    xlWS.Cells(lastRow + 2, 5).Value = "Average Fuel:"
+    If totalRunHrs <> 0 Then
+        xlWS.Cells(lastRow + 2, 6).Value = Round(totalFuel / totalRunHrs, 2)
+        xlWS.Cells(lastRow + 2, 6).NumberFormat = "#,##0.00"
+    Else
+        xlWS.Cells(lastRow + 2, 6).Value = "N/A"
+    End If
+
+    ' Format
+    xlWS.Columns.AutoFit
+    xlApp.Visible = True
+
+    ' Cleanup
+    rst.Close
+    qdf.Close
+    Set rst = Nothing
+    Set qdf = Nothing
+    Set db = Nothing
+    Exit Sub
+
+Err_Handler:
+    MsgBox "Export failed: " & Err.Description, vbCritical
+    If Not rst Is Nothing Then On Error Resume Next: rst.Close
+    If Not qdf Is Nothing Then On Error Resume Next: qdf.Close
+    Set rst = Nothing: Set qdf = Nothing: Set db = Nothing
+    If Not xlApp Is Nothing Then xlApp.Quit: Set xlApp = Nothing
+End Sub

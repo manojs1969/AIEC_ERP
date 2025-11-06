@@ -1,0 +1,138 @@
+
+Private Sub ClearFieldsAfterUpdate()
+    ' Safely clear all controls except cboLocation
+    On Error Resume Next ' Prevents errors if unbound
+
+    ' Only clear cboItemCode if allowed
+    If Me.cboItemCode.ControlSource = "" Then
+        Me.cboItemCode = Null
+    End If
+
+    Me.txtBOQItem = ""
+    Me.txtCategory = ""
+    Me.Start_Dt = Null
+    Me.End_Dt = Null
+    Me.BOQQty = Null
+    Me.UOM = ""
+    Me.BOQRate = Null
+    Me.Total_Value = Null
+End Sub
+
+Private Sub cboLocation_AfterUpdate()
+    If IsNull(Me.CboLocation) Then
+        MsgBox "Please select Location.", vbExclamation, "Missing Information"
+        Me.CboLocation.SetFocus
+        Exit Sub
+    End If
+
+    ' Optional: check for a date control like Me.Start_Dt or Me.ExDate
+    ' If required, uncomment this part
+    'If IsNull(Me.Start_Dt) Then
+    '    MsgBox "Please select Start Date.", vbExclamation, "Missing Information"
+    '    Me.Start_Dt.SetFocus
+    '    Exit Sub
+    'End If
+
+    ' Requery or repopulate ItemCode combo box
+    Me.cboItemCode.Requery
+    Me.cboItemCode = ""
+
+    ' Clear other fields
+    Me.txtBOQItem = ""
+    Me.txtCategory = ""
+    Me.Start_Dt = Null
+    Me.End_Dt = Null
+    Me.BOQQty = Null
+    Me.UOM = ""
+    Me.BOQRate = Null
+    Me.Total_Value = Null
+End Sub
+
+Private Sub cboItemCode_AfterUpdate()
+    Dim rs As DAO.Recordset
+    Dim sql As String
+
+    If IsNull(Me.cboItemCode) Then Exit Sub
+
+    sql = "SELECT * FROM BOQ WHERE ItemCode = '" & Replace(Me.cboItemCode.Value, "'", "''") & "'"
+
+    On Error GoTo ErrorHandler
+    Set rs = CurrentDb.OpenRecordset(sql)
+
+    If Not (rs.EOF Or rs.BOF) Then
+        Me.txtBOQItem = Nz(rs!BOQItem, "")
+        Me.txtCategory = Nz(rs!Category, "")
+        Me.Start_Dt = Nz(rs!Start_Dt, Null)
+        Me.End_Dt = Nz(rs!End_Dt, Null)
+        Me.BOQQty = Nz(rs!BOQQty, 0)
+        Me.UOM = Nz(rs!UOM, "")
+        Me.BOQRate = Nz(rs!BOQRate, 0)
+        Me.Total_Value = Me.BOQQty * Me.BOQRate
+    Else
+        MsgBox "No matching BOQ record found.", vbInformation
+    End If
+
+    rs.Close
+    Set rs = Nothing
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error fetching record: " & Err.Description, vbCritical
+    If Not rs Is Nothing Then
+        rs.Close
+        Set rs = Nothing
+    End If
+End Sub
+
+Private Sub btnUpdate_Click()
+    Dim sql As String
+
+    ' Validate required fields
+    If IsNull(Me.CboLocation) Or IsNull(Me.cboItemCode) Then
+        MsgBox "Please select both Location and Item Code.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Build and execute update SQL
+    sql = "UPDATE BOQ SET " & _
+          "BOQItem = '" & Me.txtBOQItem & "', " & _
+          "Category = '" & Me.txtCategory & "', " & _
+          "Start_Dt = #" & Format(Me.Start_Dt, "yyyy-mm-dd") & "#, " & _
+          "End_Dt = #" & Format(Me.End_Dt, "yyyy-mm-dd") & "#, " & _
+          "BOQQty = " & Nz(Me.BOQQty, 0) & ", " & _
+          "UOM = '" & Me.UOM & "', " & _
+          "BOQRate = " & Nz(Me.BOQRate, 0) & " " & _
+          "WHERE Location = " & Me.CboLocation.Value & " AND ItemCode = '" & Me.cboItemCode.Value & "'"
+
+    On Error GoTo UpdateError
+    CurrentDb.Execute sql, dbFailOnError
+
+    MsgBox "Record updated successfully.", vbInformation
+
+    ' Recalculate and display Total_Value
+    Me.Total_Value = Me.BOQQty * Me.BOQRate
+
+    ' Clear all fields except cboLocation
+    Me.cboItemCode = ""
+    Me.txtBOQItem = ""
+    Me.txtCategory = ""
+    Me.Start_Dt = Null
+    Me.End_Dt = Null
+    Me.BOQQty = Null
+    Me.UOM = ""
+    Me.BOQRate = Null
+    Me.Total_Value = Null
+
+    Exit Sub
+
+UpdateError:
+    MsgBox "Error updating record: " & Err.Description, vbCritical
+End Sub
+
+Private Sub Form_Load()
+    ' Ensure Total_Value is read-only
+    Me.Total_Value.Locked = True
+    Me.Total_Value.Enabled = False
+End Sub
+
+

@@ -1,0 +1,502 @@
+Option Compare Database
+Option Explicit
+
+'-----------------------------------------
+' Database and transaction handling
+'-----------------------------------------
+Private Function BeginTransaction() As DAO.Workspace
+    Set BeginTransaction = DBEngine.Workspaces(0)
+    BeginTransaction.BeginTrans
+End Function
+
+Private Sub CommitTransaction(ws As DAO.Workspace)
+    If Not ws Is Nothing Then
+        ws.CommitTrans
+    End If
+End Sub
+
+Private Sub RollbackTransaction(ws As DAO.Workspace)
+    If Not ws Is Nothing Then
+        ws.Rollback
+    End If
+End Sub
+
+'-----------------------------------------
+' Common utility functions
+'-----------------------------------------
+Private Function GetCurrentUsername() As String
+    GetCurrentUsername = Replace(Environ("Username"), "'", "''")
+End Function
+
+Private Sub LogError(ProcedureName As String, ErrorDesc As String, Optional AdditionalInfo As String = "")
+    Debug.Print "ERROR [" & Now() & "] in " & ProcedureName & ": " & ErrorDesc & " | " & AdditionalInfo
+End Sub
+
+Private Function SafeNz(value As Variant, Optional Default As Variant = 0) As Variant
+    If IsNull(value) Then
+        SafeNz = Default
+    Else
+        SafeNz = value
+    End If
+End Function
+'-----------------------------------------
+' Stock management functions - FIXED
+'-----------------------------------------
+Private Function UpdateStockQuantity(ItemID As Long, StoreID As Long, QtyChange As Double, _
+                                   Rate As Currency, FieldToUpdate As String) As Double
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rsStock As DAO.Recordset
+    Dim CurrentStock As Double
+    
+    Set db = CurrentDb
+    
+    ' Use recordset approach instead of SQL to avoid data type issues
+    Set rsStock = db.OpenRecordset( _
+        "SELECT * FROM tblStoreStock WHERE ItemID = " & ItemID & " AND StoreID = " & StoreID, _
+        dbOpenDynaset)
+    
+    If rsStock.EOF Then
+        ' Insert new record
+        rsStock.AddNew
+        rsStock!ItemID = CLng(ItemID)
+        rsStock!StoreID = CLng(StoreID)
+        rsStock!OpeningQty = CDbl(0)
+        
+        If FieldToUpdate = "ReceivedQty" Then
+            rsStock!ReceivedQty = CDbl(QtyChange)
+            rsStock!IssuedQty = CDbl(0)
+            CurrentStock = QtyChange
+        Else
+            rsStock!ReceivedQty = CDbl(0)
+            rsStock!IssuedQty = CDbl(QtyChange)
+            CurrentStock = -QtyChange
+        End If
+        
+        rsStock!CurrentStock = CDbl(CurrentStock)
+        rsStock!lastRate = CCur(Rate)  ' ? FIXED: Capital 'R' in Rate
+        rsStock!LastUpdated = Now()
+        rsStock!ModifiedBy = GetCurrentUsername()
+        rsStock.Update
+    Else
+        ' Update existing record
+        rsStock.Edit
+        If FieldToUpdate = "ReceivedQty" Then
+            rsStock!ReceivedQty = CDbl(SafeNz(rsStock!ReceivedQty, 0) + QtyChange)
+        Else
+            rsStock!IssuedQty = CDbl(SafeNz(rsStock!IssuedQty, 0) + QtyChange)
+        End If
+        
+        rsStock!CurrentStock = CDbl(SafeNz(rsStock!CurrentStock, 0) + QtyChange)
+        rsStock!lastRate = CCur(Rate)  ' ? FIXED: Capital 'R' in Rate
+        rsStock!LastUpdated = Now()
+        rsStock!ModifiedBy = GetCurrentUsername()
+        rsStock.Update
+        
+        CurrentStock = rsStock!CurrentStock
+    End If
+    
+    rsStock.Close
+    UpdateStockQuantity = CurrentStock
+    Exit Function
+    
+ErrHandler:
+    LogError "UpdateStockQuantity", Err.Description, "ItemID: " & ItemID & ", StoreID: " & StoreID & ", Qty: " & QtyChange
+    If Not rsStock Is Nothing Then
+        If rsStock.EditMode <> dbEditNone Then rsStock.CancelUpdate
+        rsStock.Close
+    End If
+    UpdateStockQuantity = -1
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Function
+
+Private Function GetCurrentStock(ItemID As Long, StoreID As Long) As Double
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset( _
+        "SELECT CurrentStock FROM tblStoreStock WHERE ItemID = " & ItemID & " AND StoreID = " & StoreID, _
+        dbOpenSnapshot)
+    
+    If Not rs.EOF Then
+        GetCurrentStock = SafeNz(rs!CurrentStock, 0)
+    Else
+        GetCurrentStock = 0
+    End If
+    
+    rs.Close
+    Exit Function
+    
+ErrHandler:
+    LogError "GetCurrentStock", Err.Description, "ItemID: " & ItemID & ", StoreID: " & StoreID
+    GetCurrentStock = 0
+End Function
+
+Private Function GetStoreIDFromGRN(GRNID As Long) As Long
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset( _
+        "SELECT StoreID FROM tblPurchaseReceiptHeader WHERE GRNID = " & GRNID, _
+        dbOpenSnapshot)
+    
+    If Not rs.EOF Then
+        GetStoreIDFromGRN = SafeNz(rs!StoreID, 0)
+    Else
+        GetStoreIDFromGRN = 0
+    End If
+    
+    rs.Close
+    Exit Function
+    
+ErrHandler:
+    LogError "GetStoreIDFromGRN", Err.Description, "GRNID: " & GRNID
+    GetStoreIDFromGRN = 0
+End Function
+
+'-----------------------------------------
+' Add Stock Ledger Entry - ULTRA SIMPLIFIED
+'-----------------------------------------
+Private Sub AddStockLedgerEntry(ItemID As Long, StoreID As Long, QtyChange As Double, _
+                              Rate As Currency, RefNo As String, TranType As String, _
+                              Remarks As String, BalanceAfter As Double)
+    On Error GoTo ErrHandler
+
+    Dim db As DAO.Database
+    Dim rsLedger As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rsLedger = db.OpenRecordset("tblStockLedger", dbOpenDynaset, dbSeeChanges)
+    
+    rsLedger.AddNew
+    ' Set required fields first
+    rsLedger!ItemID = ItemID
+    rsLedger!StoreID = StoreID
+    rsLedger!TranDate = Now()
+    rsLedger!TranType = TranType
+    rsLedger!TranRefID = RefNo
+    
+    ' Set quantities based on transaction type
+    If TranType = "IN" Then
+        rsLedger!QtyIn = QtyChange
+        rsLedger!QtyOut = 0
+    Else
+        rsLedger!QtyIn = 0
+        rsLedger!QtyOut = -QtyChange ' Make positive for OUT transactions
+    End If
+    
+    ' Set numeric fields with explicit type conversion
+    rsLedger!BalanceQty = CDbl(BalanceAfter)
+    rsLedger!Rate = CCur(Rate)
+    rsLedger!Amount = CCur(rsLedger!QtyIn * Rate)
+    rsLedger!Remarks = Remarks
+    rsLedger!CreatedBy = GetCurrentUsername()
+    rsLedger!CreatedDate = Now()
+    
+    rsLedger.Update
+    rsLedger.Close
+    
+    Exit Sub
+
+ErrHandler:
+    LogError "AddStockLedgerEntry", Err.Description, "ItemID: " & ItemID & ", Ref: " & RefNo & ", Qty: " & QtyChange & ", Type: " & TranType
+    If Not rsLedger Is Nothing Then
+        If rsLedger.EditMode <> dbEditNone Then rsLedger.CancelUpdate
+        rsLedger.Close
+    End If
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'-----------------------------------------
+' Reverse stock from GRN - FIXED
+'-----------------------------------------
+Public Sub ReverseStockFromGRN(GRNID As Long)
+    On Error GoTo ErrHandler
+
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim rsDetails As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long, QtyReceived As Double, Rate As Currency
+    Dim CurrentStock As Double
+    Dim SQL As String
+
+    Set ws = BeginTransaction()
+    Set db = CurrentDb
+
+    StoreID = GetStoreIDFromGRN(GRNID)
+    If StoreID = 0 Then
+        RollbackTransaction ws
+        LogError "ReverseStockFromGRN", "StoreID not found for GRN", "GRNID: " & GRNID
+        Exit Sub
+    End If
+
+    ' Simple SQL without parameters
+    SQL = "SELECT ItemID, ReceivedQty, Rate FROM tblPurchaseReceiptDetails WHERE GRNID = " & GRNID
+    Set rsDetails = db.OpenRecordset(SQL, dbOpenSnapshot)
+
+    Do While Not rsDetails.EOF
+        ItemID = SafeNz(rsDetails!ItemID, 0)
+        QtyReceived = SafeNz(rsDetails!ReceivedQty, 0)
+        Rate = SafeNz(rsDetails!Rate, 0)
+
+        If ItemID > 0 And QtyReceived > 0 Then
+            ' Check current stock before reversal to prevent negative stock
+            Dim CurrentStockBefore As Double
+            CurrentStockBefore = GetCurrentStock(ItemID, StoreID)
+            
+            If CurrentStockBefore >= QtyReceived Then
+                ' Update stock (subtract received quantity)
+                CurrentStock = UpdateStockQuantity(ItemID, StoreID, -QtyReceived, Rate, "ReceivedQty")
+                
+                If CurrentStock >= 0 Then
+                    ' Add reversal ledger entry - FIXED: Pass Rate as Currency
+                    Call AddStockLedgerEntry(ItemID, StoreID, -QtyReceived, Rate, _
+                                           "GRN#" & GRNID, "OUT", "GRN Reversal", CurrentStock)
+                Else
+                    LogError "ReverseStockFromGRN", "Stock reversal failed", "ItemID: " & ItemID & ", Qty: " & QtyReceived & ", CurrentStock: " & CurrentStock
+                    Err.Raise 1001, , "Failed to reverse stock for ItemID: " & ItemID & ". CurrentStock returned: " & CurrentStock
+                End If
+            Else
+                ' Allow reversal even if it goes negative (for correction purposes)
+                CurrentStock = UpdateStockQuantity(ItemID, StoreID, -QtyReceived, Rate, "ReceivedQty")
+                
+                If CurrentStock >= -999999 Then ' Allow negative for corrections
+                    ' FIXED: Pass Rate as Currency
+                    Call AddStockLedgerEntry(ItemID, StoreID, -QtyReceived, Rate, _
+                                           "GRN#" & GRNID, "OUT", "GRN Reversal (Adjustment)", CurrentStock)
+                Else
+                    Err.Raise 1001, , "Stock would go too negative for ItemID: " & ItemID
+                End If
+            End If
+        End If
+
+        rsDetails.MoveNext
+    Loop
+
+    CommitTransaction ws
+    rsDetails.Close
+    
+    Exit Sub
+
+ErrHandler:
+    RollbackTransaction ws
+    LogError "ReverseStockFromGRN", Err.Description, "GRNID: " & GRNID
+    MsgBox "Error reversing store stock from GRN: " & Err.Description, vbCritical, "modStockUpdate"
+End Sub
+
+
+'-----------------------------------------
+' Add stock from GRN - ULTRA SIMPLIFIED
+'-----------------------------------------
+Public Sub UpdateStoreStockFromGRN(GRNID As Long)
+    On Error GoTo ErrHandler
+
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim rsDetails As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long, QtyReceived As Double, Rate As Currency
+    Dim CurrentStock As Double
+    Dim SQL As String
+
+    Set ws = BeginTransaction()
+    Set db = CurrentDb
+
+    ' Get StoreID from GRN header
+    StoreID = GetStoreIDFromGRN(GRNID)
+    If StoreID = 0 Then
+        RollbackTransaction ws
+        LogError "UpdateStoreStockFromGRN", "StoreID not found for GRN", "GRNID: " & GRNID
+        Exit Sub
+    End If
+
+    ' Get GRN details
+    SQL = "SELECT ItemID, ReceivedQty, Rate FROM tblPurchaseReceiptDetails WHERE GRNID = " & GRNID
+    Set rsDetails = db.OpenRecordset(SQL, dbOpenSnapshot)
+
+    Do While Not rsDetails.EOF
+        ItemID = SafeNz(rsDetails!ItemID, 0)
+        QtyReceived = SafeNz(rsDetails!ReceivedQty, 0)
+        Rate = SafeNz(rsDetails!Rate, 0)
+
+        If ItemID > 0 And QtyReceived > 0 Then
+            ' Update stock with positive quantity
+            CurrentStock = UpdateStockQuantity(ItemID, StoreID, QtyReceived, Rate, "ReceivedQty")
+            
+            If CurrentStock > -1000000 Then ' Allow reasonable values
+                ' Add stock ledger entry
+                Call AddStockLedgerEntry(ItemID, StoreID, QtyReceived, Rate, _
+                                       "GRN#" & GRNID, "IN", "Goods Received", CurrentStock)
+            Else
+                LogError "UpdateStoreStockFromGRN", "Stock update would cause extreme value", "ItemID: " & ItemID & ", Qty: " & QtyReceived
+                Err.Raise 1001, , "Stock update would cause extreme value for ItemID: " & ItemID
+            End If
+        End If
+
+        rsDetails.MoveNext
+    Loop
+
+    CommitTransaction ws
+    rsDetails.Close
+    
+    Exit Sub
+
+ErrHandler:
+    RollbackTransaction ws
+    LogError "UpdateStoreStockFromGRN", Err.Description, "GRNID: " & GRNID
+    MsgBox "Error updating store stock from GRN: " & Err.Description, vbCritical, "modStockUpdate"
+End Sub
+
+'-----------------------------------------
+' Reduce stock from Issue - ULTRA SIMPLIFIED
+'-----------------------------------------
+Public Sub UpdateStoreStockFromIssue(IssueID As Long)
+    On Error GoTo ErrHandler
+
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim rsDetails As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long, QtyIssued As Double, Rate As Currency
+    Dim CurrentStock As Double
+    Dim SQL As String
+
+    Set ws = BeginTransaction()
+    Set db = CurrentDb
+
+    ' Get store from issue header
+    StoreID = GetStoreIDFromIssue(IssueID)
+    If StoreID = 0 Then
+        RollbackTransaction ws
+        LogError "UpdateStoreStockFromIssue", "StoreID not found for Issue", "IssueID: " & IssueID
+        Exit Sub
+    End If
+
+    SQL = "SELECT ItemID, QuantityIssued, Rate FROM tblIssueDetails WHERE IssueID = " & IssueID
+    Set rsDetails = db.OpenRecordset(SQL, dbOpenSnapshot)
+
+    Do While Not rsDetails.EOF
+        ItemID = SafeNz(rsDetails!ItemID, 0)
+        QtyIssued = SafeNz(rsDetails!QuantityIssued, 0)
+        Rate = SafeNz(rsDetails!Rate, 0)
+
+        If ItemID > 0 And QtyIssued > 0 Then
+            ' Update stock with negative quantity (issuing reduces stock)
+            CurrentStock = UpdateStockQuantity(ItemID, StoreID, -QtyIssued, Rate, "IssuedQty")
+            
+            If CurrentStock > -1000000 Then
+                Call AddStockLedgerEntry(ItemID, StoreID, -QtyIssued, Rate, _
+                                       "ISSUE#" & IssueID, "OUT", "Item Issued", CurrentStock)
+            Else
+                LogError "UpdateStoreStockFromIssue", "Stock issue would cause extreme negative", "ItemID: " & ItemID & ", Qty: " & QtyIssued
+                Err.Raise 1001, , "Stock issue would cause extreme negative value for ItemID: " & ItemID
+            End If
+        End If
+
+        rsDetails.MoveNext
+    Loop
+
+    CommitTransaction ws
+    rsDetails.Close
+    
+    Exit Sub
+
+ErrHandler:
+    RollbackTransaction ws
+    LogError "UpdateStoreStockFromIssue", Err.Description, "IssueID: " & IssueID
+    MsgBox "Error updating store stock from Issue: " & Err.Description, vbCritical, "modStockUpdate"
+End Sub
+
+'-----------------------------------------
+' Reverse stock from Issue - FIXED
+'-----------------------------------------
+Public Sub ReverseStockFromIssue(IssueID As Long)
+    On Error GoTo ErrHandler
+
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim rsDetails As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long, QtyIssued As Double, Rate As Currency
+    Dim CurrentStock As Double
+    Dim SQL As String
+
+    Set ws = BeginTransaction()
+    Set db = CurrentDb
+
+    StoreID = GetStoreIDFromIssue(IssueID)
+    If StoreID = 0 Then
+        RollbackTransaction ws
+        LogError "ReverseStockFromIssue", "StoreID not found for Issue", "IssueID: " & IssueID
+        Exit Sub
+    End If
+
+    SQL = "SELECT ItemID, QuantityIssued, Rate FROM tblIssueDetails WHERE IssueID = " & IssueID
+    Set rsDetails = db.OpenRecordset(SQL, dbOpenSnapshot)
+
+    Do While Not rsDetails.EOF
+        ItemID = SafeNz(rsDetails!ItemID, 0)
+        QtyIssued = SafeNz(rsDetails!QuantityIssued, 0)
+        Rate = SafeNz(rsDetails!Rate, 0)
+
+        If ItemID > 0 And QtyIssued > 0 Then
+            ' Update stock (add back issued quantity)
+            CurrentStock = UpdateStockQuantity(ItemID, StoreID, QtyIssued, Rate, "IssuedQty")
+            
+            If CurrentStock >= -999999 Then ' Allow corrections
+                ' FIXED: Pass Rate as Currency instead of 0
+                Call AddStockLedgerEntry(ItemID, StoreID, QtyIssued, Rate, _
+                                       "ISSUE#" & IssueID, "IN", "Issue Reversal", CurrentStock)
+            Else
+                LogError "ReverseStockFromIssue", "Stock issue reversal failed", "ItemID: " & ItemID & ", Qty: " & QtyIssued & ", CurrentStock: " & CurrentStock
+                Err.Raise 1001, , "Failed to reverse stock for ItemID: " & ItemID & ". CurrentStock returned: " & CurrentStock
+            End If
+        End If
+
+        rsDetails.MoveNext
+    Loop
+
+    CommitTransaction ws
+    rsDetails.Close
+    
+    Exit Sub
+
+ErrHandler:
+    RollbackTransaction ws
+    LogError "ReverseStockFromIssue", Err.Description, "IssueID: " & IssueID
+    MsgBox "Error reversing store stock from Issue: " & Err.Description, vbCritical, "modStockUpdate"
+End Sub
+
+Private Function GetStoreIDFromIssue(IssueID As Long) As Long
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset( _
+        "SELECT StoreID FROM tblIssueHeader WHERE IssueID = " & IssueID, _
+        dbOpenSnapshot)
+    
+    If Not rs.EOF Then
+        GetStoreIDFromIssue = SafeNz(rs!StoreID, 0)
+    Else
+        GetStoreIDFromIssue = 0
+    End If
+    
+    rs.Close
+    Exit Function
+    
+ErrHandler:
+    LogError "GetStoreIDFromIssue", Err.Description, "IssueID: " & IssueID
+    GetStoreIDFromIssue = 0
+End Function
+

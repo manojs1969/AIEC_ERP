@@ -1,0 +1,516 @@
+Option Compare Database
+Option Explicit
+
+Private Sub Form_Load()
+    On Error GoTo ErrHandler
+    
+    ' Clear controls on load
+    Call ClearDetailControls
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading form: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+Private Sub txtReturnID_AfterUpdate()
+    Call LoadReturnDetails(0)
+End Sub
+
+'====================================================
+' LOAD RETURN DETAILS FROM HEADER
+'====================================================
+Private Sub LoadReturnDetails(rowIndex As Integer)
+    On Error GoTo ErrHandler
+    
+    Dim ReturnID As Long
+    Dim GRNID As Long
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    
+    ReturnID = Nz(Me.Controls("txtReturnID" & rowIndex).value, 0)
+    
+    If ReturnID = 0 Then Exit Sub
+    
+    ' Check if details already exist
+    If DCount("*", "tblPurchaseReturnDetails", "ReturnID=" & ReturnID) > 0 Then
+        ' Load existing details
+        Call LoadExistingReturnDetails(ReturnID)
+        Exit Sub
+    End If
+    
+    ' Get GRNID from header
+    GRNID = Nz(DLookup("GRNID", "tblPurchaseReturnHeader", "ReturnID=" & ReturnID), 0)
+    
+    If GRNID = 0 Then
+        MsgBox "No GRN linked to this return. Please add items manually.", vbInformation, "No GRN"
+        Exit Sub
+    End If
+    
+    ' Load items from GRN
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT prd.PRDetailID, prd.ItemID, prd.ReceivedQty, " & _
+                              "prd.Rate, prd.PODetailID, i.UnitID " & _
+                              "FROM tblPurchaseReceiptDetails prd " & _
+                              "INNER JOIN tblItem i ON prd.ItemID = i.ItemID " & _
+                              "WHERE prd.GRNID=" & GRNID & " " & _
+                              "ORDER BY prd.PRDetailID;", dbOpenSnapshot)
+    
+    Call ClearDetailControls
+    
+    i = 0
+    Do While Not rs.EOF And i <= 6
+        Me.Controls("txtReturnID").value = ReturnID
+        Me.Controls("txtGRNDetailID" & i).value = rs!PRDetailID
+        Me.Controls("txtItemID" & i).value = rs!ItemID
+        Me.Controls("txtPODetailID" & i).value = Nz(rs!PODetailID, 0)
+        Me.Controls("txtQuantity" & i).value = 0 ' User will enter return quantity
+        Me.Controls("txtUnitID" & i).value = Nz(rs!UnitID, 0)
+        Me.Controls("txtRate" & i).value = rs!Rate
+        Me.Controls("txtReturnValue" & i).value = 0
+        
+        i = i + 1
+        rs.MoveNext
+    Loop
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Loaded " & i & " items from GRN " & GRNID
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading return details: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in LoadReturnDetails: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' LOAD EXISTING RETURN DETAILS
+'====================================================
+Private Sub LoadExistingReturnDetails(ReturnID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    
+    Set db = CurrentDb
+    Set rs = db.OpenRecordset("SELECT * FROM tblPurchaseReturnDetails " & _
+                              "WHERE ReturnID=" & ReturnID & " ORDER BY ReturnDetailID;", dbOpenSnapshot)
+    
+    Call ClearDetailControls
+    
+    i = 0
+    Do While Not rs.EOF And i <= 6
+        'Me.Controls("txtReturnDetailID").value = rs!ReturnDetailID
+        Me.Controls("txtReturnID").value = rs!ReturnID
+        Me.Controls("txtItemID" & i).value = rs!ItemID
+        Me.Controls("txtGRNDetailID" & i).value = Nz(rs!GRNDetailID, 0)
+        Me.Controls("txtPODetailID" & i).value = Nz(rs!PODetailID, 0)
+        Me.Controls("txtBatchNo" & i).value = Nz(rs!BatchNo, "")
+        Me.Controls("txtExpiryDate" & i).value = Nz(rs!ExpiryDate, "")
+        Me.Controls("txtQuantity" & i).value = rs!Quantity
+        Me.Controls("txtUnitID" & i).value = Nz(rs!UnitID, 0)
+        Me.Controls("txtRate" & i).value = rs!Rate
+        Me.Controls("txtReturnValue" & i).value = rs!ReturnValue
+        Me.Controls("txtRemarks" & i).value = Nz(rs!Remarks, "")
+        
+        i = i + 1
+        rs.MoveNext
+    Loop
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Loaded " & i & " existing return detail rows"
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error loading existing details: " & Err.Description, vbCritical, "Error"
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' QUANTITY CHANGE EVENTS - AUTO CALCULATE RETURN VALUE
+'====================================================
+Private Sub txtQuantity0_AfterUpdate()
+    Call CalculateReturnValue(0)
+End Sub
+Private Sub txtQuantity1_AfterUpdate()
+    Call CalculateReturnValue(1)
+End Sub
+Private Sub txtQuantity2_AfterUpdate()
+    Call CalculateReturnValue(2)
+End Sub
+Private Sub txtQuantity3_AfterUpdate()
+    Call CalculateReturnValue(3)
+End Sub
+Private Sub txtQuantity4_AfterUpdate()
+    Call CalculateReturnValue(4)
+End Sub
+Private Sub txtQuantity5_AfterUpdate()
+    Call CalculateReturnValue(5)
+End Sub
+Private Sub txtQuantity6_AfterUpdate()
+    Call CalculateReturnValue(6)
+End Sub
+
+Private Sub CalculateReturnValue(rowIndex As Integer)
+    On Error Resume Next
+    
+    Dim Quantity As Double
+    Dim Rate As Currency
+    Dim ReturnValue As Currency
+    
+    Quantity = Nz(Me.Controls("txtQuantity" & rowIndex).value, 0)
+    Rate = Nz(Me.Controls("txtRate" & rowIndex).value, 0)
+    ReturnValue = Quantity * Rate
+    
+    Me.Controls("txtReturnValue" & rowIndex).value = ReturnValue
+End Sub
+
+'====================================================
+' SAVE DETAILS BUTTON
+'====================================================
+Private Sub btnSaveDetails_Click()
+    On Error GoTo ErrHandler
+    
+    Dim ws As DAO.Workspace
+    Dim db As DAO.Database
+    Dim TransactionStarted As Boolean
+    Dim ReturnID As Long
+    
+    TransactionStarted = False
+    
+    ' Get ReturnID from first row
+    ReturnID = Nz(Me.txtReturnID.value, 0)
+    
+    If ReturnID = 0 Then
+        MsgBox "Please enter Return ID first!", vbExclamation, "Missing Return ID"
+        Me.txtReturnID.SetFocus
+        Exit Sub
+    End If
+    
+    ' Validate that ReturnID exists in header
+    If DCount("*", "tblPurchaseReturnHeader", "ReturnID=" & ReturnID) = 0 Then
+        MsgBox "Return ID " & ReturnID & " not found in header.", vbExclamation, "Invalid Return ID"
+        Exit Sub
+    End If
+    
+    Set ws = DBEngine.Workspaces(0)
+    Set db = CurrentDb
+    
+    ws.BeginTrans
+    TransactionStarted = True
+    Debug.Print "Transaction started for Return Details"
+    
+    ' Save all detail rows
+    Call SaveReturnDetailsFromRows(ReturnID)
+    
+    ' Update header total
+    Call UpdateHeaderTotal(ReturnID)
+    
+    ws.CommitTrans
+    TransactionStarted = False
+    Debug.Print "Transaction committed"
+    
+    ' Update stock
+    Call UpdateStoreStockFromReturn(ReturnID)
+    
+    MsgBox "Return details saved and stock updated successfully!", vbInformation, "Success"
+    
+    ' Reload details
+    Call LoadExistingReturnDetails(ReturnID)
+
+ExitHandler:
+    On Error Resume Next
+    If Not db Is Nothing Then Set db = Nothing
+    If Not ws Is Nothing Then Set ws = Nothing
+    Exit Sub
+
+ErrHandler:
+    On Error Resume Next
+    If TransactionStarted And Not ws Is Nothing Then
+        ws.Rollback
+        Debug.Print "Transaction rolled back"
+        MsgBox "Transaction rolled back. No changes were saved.", vbExclamation, "Save Cancelled"
+    End If
+    MsgBox "Error saving return details: " & Err.Description, vbCritical, "Error"
+    Debug.Print "Error in btnSaveDetails_Click: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' SAVE RETURN DETAILS FROM ROWS
+'====================================================
+Private Sub SaveReturnDetailsFromRows(ReturnID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim i As Integer
+    Dim ItemID As Long
+    Dim Quantity As Double
+    Dim ItemCount As Integer
+    
+    Set db = CurrentDb
+    
+    ' Delete existing details
+    db.Execute "DELETE FROM tblPurchaseReturnDetails WHERE ReturnID=" & ReturnID, dbFailOnError
+    Debug.Print "Deleted existing details for ReturnID " & ReturnID
+    
+    Set rs = db.OpenRecordset("tblPurchaseReturnDetails", dbOpenDynaset)
+    
+    ItemCount = 0
+    For i = 0 To 6
+        ItemID = Nz(Me.Controls("txtItemID" & i).value, 0)
+        Quantity = Nz(Me.Controls("txtQuantity" & i).value, 0)
+        
+        If ItemID > 0 And Quantity > 0 Then
+            rs.AddNew
+            rs!ReturnID = CLng(ReturnID)
+            rs!ItemID = CLng(ItemID)
+            
+            If Nz(Me.Controls("txtGRNDetailID" & i).value, 0) > 0 Then
+                rs!GRNDetailID = CLng(Me.Controls("txtGRNDetailID" & i).value)
+            End If
+            
+            If Nz(Me.Controls("txtPODetailID" & i).value, 0) > 0 Then
+                rs!PODetailID = CLng(Me.Controls("txtPODetailID" & i).value)
+            End If
+            
+            If Len(Trim(Nz(Me.Controls("txtBatchNo" & i).value, ""))) > 0 Then
+                rs!BatchNo = CStr(Me.Controls("txtBatchNo" & i).value)
+            End If
+            
+            If Not IsNull(Me.Controls("txtExpiryDate" & i).value) Then
+                rs!ExpiryDate = CDate(Me.Controls("txtExpiryDate" & i).value)
+            End If
+            
+            rs!Quantity = CDbl(Quantity)
+            
+            If Nz(Me.Controls("txtUnitID" & i).value, 0) > 0 Then
+                rs!UnitID = CLng(Me.Controls("txtUnitID" & i).value)
+            End If
+            
+            rs!Rate = CCur(Nz(Me.Controls("txtRate" & i).value, 0))
+            rs!ReturnValue = CCur(Nz(Me.Controls("txtReturnValue" & i).value, 0))
+            
+            If Len(Trim(Nz(Me.Controls("txtRemarks" & i).value, ""))) > 0 Then
+                rs!Remarks = CStr(Me.Controls("txtRemarks" & i).value)
+            End If
+            
+            rs.Update
+            ItemCount = ItemCount + 1
+            Debug.Print "Saved detail row " & i & ": ItemID=" & ItemID & ", Qty=" & Quantity
+        End If
+    Next i
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Saved " & ItemCount & " return detail rows"
+    
+    If ItemCount = 0 Then
+        Err.Raise vbObjectError + 1, "SaveReturnDetailsFromRows", "No items to save."
+    End If
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in SaveReturnDetailsFromRows: " & Err.Description
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'====================================================
+' UPDATE HEADER TOTAL
+'====================================================
+Private Sub UpdateHeaderTotal(ReturnID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim TotalValue As Currency
+    
+    Set db = CurrentDb
+    
+    TotalValue = Nz(DSum("ReturnValue", "tblPurchaseReturnDetails", "ReturnID=" & ReturnID), 0)
+    
+    db.Execute "UPDATE tblPurchaseReturnHeader SET TotalReturnValue=" & TotalValue & _
+               " WHERE ReturnID=" & ReturnID, dbFailOnError
+    
+    Debug.Print "Updated header total: " & TotalValue
+    
+    Set db = Nothing
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in UpdateHeaderTotal: " & Err.Description
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'====================================================
+' UPDATE STORE STOCK FROM RETURN (REDUCE STOCK)
+'====================================================
+Private Sub UpdateStoreStockFromReturn(ReturnID As Long)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rsReturn As DAO.Recordset
+    Dim rsStock As DAO.Recordset
+    Dim StoreID As Long
+    Dim ItemID As Long
+    Dim ReturnQty As Double
+    Dim CurrentStock As Double
+    Dim Rate As Currency
+    
+    Set db = CurrentDb
+    
+    ' Get Store ID from header
+    StoreID = Nz(DLookup("StoreID", "tblPurchaseReturnHeader", "ReturnID=" & ReturnID), 0)
+    
+    If StoreID = 0 Then
+        Debug.Print "Warning: No StoreID found for ReturnID " & ReturnID
+        Exit Sub
+    End If
+    
+    ' Get all return details
+    Set rsReturn = db.OpenRecordset("SELECT ItemID, Quantity, Rate FROM tblPurchaseReturnDetails " & _
+                                    "WHERE ReturnID=" & ReturnID, dbOpenSnapshot)
+    
+    Do While Not rsReturn.EOF
+        ItemID = rsReturn!ItemID
+        ReturnQty = rsReturn!Quantity
+        Rate = rsReturn!Rate
+        
+        ' Update store stock
+        Set rsStock = db.OpenRecordset("SELECT * FROM tblStoreStock " & _
+                                       "WHERE StoreID=" & StoreID & " AND ItemID=" & ItemID, dbOpenDynaset)
+        
+        If Not rsStock.EOF Then
+            rsStock.Edit
+            rsStock!CurrentStock = Nz(rsStock!CurrentStock, 0) - ReturnQty
+            rsStock!IssuedQty = Nz(rsStock!IssuedQty, 0) + ReturnQty ' Track as "issued" (returned to vendor)
+            rsStock!LastUpdated = Now()
+            rsStock!ModifiedBy = Environ("USERNAME")
+            rsStock.Update
+            Debug.Print "Reduced stock: ItemID=" & ItemID & ", Qty=" & ReturnQty
+        Else
+            Debug.Print "Warning: No stock record found for ItemID=" & ItemID & " at StoreID=" & StoreID
+        End If
+        
+        rsStock.Close
+        
+        ' Record in stock ledger
+        Call RecordReturnInLedger(ReturnID, StoreID, ItemID, ReturnQty, Rate)
+        
+        rsReturn.MoveNext
+    Loop
+    
+    rsReturn.Close
+    Set rsReturn = Nothing
+    Set rsStock = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Stock updated for return " & ReturnID
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in UpdateStoreStockFromReturn: " & Err.Description
+    MsgBox "Error updating stock: " & Err.Description, vbCritical, "Stock Update Error"
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' RECORD RETURN IN STOCK LEDGER
+'====================================================
+Private Sub RecordReturnInLedger(ReturnID As Long, StoreID As Long, ItemID As Long, _
+                                  ReturnQty As Double, Rate As Currency)
+    On Error GoTo ErrHandler
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim ReturnDate As Date
+    Dim BalanceQty As Double
+    
+    Set db = CurrentDb
+    
+    ' Get return date
+    ReturnDate = Nz(DLookup("ReturnDate", "tblPurchaseReturnHeader", "ReturnID=" & ReturnID), Date)
+    
+    ' Get current balance
+    BalanceQty = Nz(DLookup("CurrentStock", "tblStoreStock", _
+                  "StoreID=" & StoreID & " AND ItemID=" & ItemID), 0)
+    
+    Set rs = db.OpenRecordset("tblStockLedger", dbOpenDynaset)
+    
+    rs.AddNew
+    rs!ItemID = ItemID
+    rs!StoreID = StoreID
+    rs!TranDate = ReturnDate
+    rs!TranType = "Purchase Return"
+    rs!TranRefID = ReturnID
+    rs!QtyIn = 0
+    rs!QtyOut = ReturnQty
+    rs!BalanceQty = BalanceQty
+    rs!Rate = Rate
+    rs!Amount = -1 * (ReturnQty * Rate) ' Negative amount for return
+    rs!Remarks = "Purchase Return #" & ReturnID
+    rs!CreatedDate = Now()
+    rs!CreatedBy = Environ("USERNAME")
+    rs.Update
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    Debug.Print "Recorded in ledger: ReturnID=" & ReturnID & ", ItemID=" & ItemID
+
+ExitHandler:
+    Exit Sub
+
+ErrHandler:
+    Debug.Print "Error in RecordReturnInLedger: " & Err.Description
+    Resume ExitHandler
+End Sub
+
+'====================================================
+' CLEAR DETAIL CONTROLS
+'====================================================
+Private Sub ClearDetailControls()
+    On Error Resume Next
+    
+    Dim i As Integer
+    
+    For i = 0 To 6
+        Me.Controls("txtReturnDetailID" & i).value = Null
+        Me.Controls("txtReturnID").value = Null
+        Me.Controls("txtItemID" & i).value = Null
+        Me.Controls("txtGRNDetailID" & i).value = Null
+        Me.Controls("txtPODetailID" & i).value = Null
+        Me.Controls("txtBatchNo" & i).value = Null
+        Me.Controls("txtExpiryDate" & i).value = Null
+        Me.Controls("txtQuantity" & i).value = Null
+        Me.Controls("txtUnitID" & i).value = Null
+        Me.Controls("txtRate" & i).value = Null
+        Me.Controls("txtReturnValue" & i).value = Null
+        Me.Controls("txtRemarks" & i).value = Null
+    Next i
+    
+    Debug.Print "Detail controls cleared"
+End Sub
